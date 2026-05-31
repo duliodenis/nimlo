@@ -17,6 +17,7 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("c", .{});
         exe.root_module.linkSystemLibrary("objc", .{});
         exe.root_module.linkFramework("AppKit", .{});
+        exe.root_module.linkFramework("WebKit", .{});
     }
 
     b.installArtifact(exe);

@@ -19,6 +19,7 @@ pub fn run() !void {
     // TODO(app shell): add browser chrome, commands, menus, and shortcuts.
     // TODO(webview): replace the scaffold with a real system WebView mount.
     try app_window.attachWebView(&engine);
+    try engine.load("https://example.com");
     try core.start();
 
     std.debug.print("Nimlo app shell placeholder ready.\n", .{});

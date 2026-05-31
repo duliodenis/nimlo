@@ -9,7 +9,11 @@ pub const MacOSWebView = struct {
 
     pub fn attachToWindow(self: *MacOSWebView, window_handle: ?*anyopaque) !void {
         self.window_handle = window_handle;
-        std.debug.print("macOS WebView scaffold attached.\n", .{});
+        if (window_handle == null) {
+            return error.MacOSWindowHandleUnavailable;
+        }
+
+        std.debug.print("macOS WebView scaffold attached to NSWindow.\n", .{});
         // TODO(webview adapter): create WKWebView and attach it to the NSWindow content view.
         // TODO(webview adapter): report page load, title, URL, and navigation state events.
     }

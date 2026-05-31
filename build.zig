@@ -13,7 +13,31 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    if (target.result.os.tag == .macos) {
+        exe.root_module.linkSystemLibrary("c", .{});
+        exe.root_module.linkSystemLibrary("objc", .{});
+        exe.root_module.linkFramework("AppKit", .{});
+    }
+
     b.installArtifact(exe);
+
+    if (target.result.os.tag == .macos) {
+        const bundle_exe = b.addInstallFile(
+            exe.getEmittedBin(),
+            "Nimlo.app/Contents/MacOS/nimlo",
+        );
+        const bundle_plist = b.addInstallFile(
+            b.path("macos/Info.plist"),
+            "Nimlo.app/Contents/Info.plist",
+        );
+
+        b.getInstallStep().dependOn(&bundle_exe.step);
+        b.getInstallStep().dependOn(&bundle_plist.step);
+
+        const bundle_step = b.step("bundle", "Build Nimlo.app");
+        bundle_step.dependOn(&bundle_exe.step);
+        bundle_step.dependOn(&bundle_plist.step);
+    }
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());

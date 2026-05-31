@@ -20,7 +20,7 @@ pub fn run() !void {
     // TODO(webview): replace the scaffold with a real system WebView mount.
     try app_window.attachWebView(&engine);
     try core.start();
-    try app_window.show();
 
     std.debug.print("Nimlo app shell placeholder ready.\n", .{});
+    try app_window.show();
 }

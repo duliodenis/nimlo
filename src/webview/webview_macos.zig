@@ -44,6 +44,9 @@ const objc_pointer_alignment_log2: u8 = 3;
 
 extern "c" fn objc_msgSend() void;
 
+// TODO(browser core): replace this single-window flag with real navigation state.
+var current_page_is_internal = false;
+
 pub const MacOSWebView = struct {
     window_handle: Id = null,
     handle: Id = null,
@@ -99,6 +102,7 @@ pub const MacOSWebView = struct {
         const request = msg1(Id, cls("NSURLRequest"), sel("requestWithURL:"), ns_url);
         if (request == null) return error.MacOSURLRequestUnavailable;
 
+        current_page_is_internal = false;
         _ = msg1(Id, self.handle, sel("loadRequest:"), request);
         std.debug.print("macOS WKWebView loading: {s}\n", .{url});
     }
@@ -117,6 +121,7 @@ pub const MacOSWebView = struct {
             nsString(html_z),
             @as(Id, null),
         );
+        current_page_is_internal = true;
         std.debug.print("macOS WKWebView loading internal page: {s}\n", .{base_url});
     }
 };
@@ -251,15 +256,8 @@ fn addressSubmitted(target: Id, _: Sel, _: Id) callconv(.c) void {
     };
 
     if (std.mem.eql(u8, normalized, "nimlo://start")) {
-        const html_z = std.heap.page_allocator.dupeZ(u8, start_page.html) catch return;
         msg1(void, address_field, sel("setStringValue:"), nsString("nimlo://start"));
-        _ = msg2(
-            Id,
-            webview,
-            sel("loadHTMLString:baseURL:"),
-            nsString(html_z),
-            @as(Id, null),
-        );
+        loadInternalStartPage(webview) catch return;
         std.debug.print("address bar loading internal page: {s}\n", .{normalized});
         return;
     }
@@ -272,6 +270,7 @@ fn addressSubmitted(target: Id, _: Sel, _: Id) callconv(.c) void {
     if (request == null) return;
 
     msg1(void, address_field, sel("setStringValue:"), nsString(url_z));
+    current_page_is_internal = false;
     _ = msg1(Id, webview, sel("loadRequest:"), request);
     std.debug.print("address bar loading: {s}\n", .{normalized});
 }
@@ -292,7 +291,26 @@ fn goForward(target: Id, _: Sel, _: Id) callconv(.c) void {
 
 fn reload(target: Id, _: Sel, _: Id) callconv(.c) void {
     const webview = getIvar(target, "webView") orelse return;
+
+    if (current_page_is_internal) {
+        loadInternalStartPage(webview) catch return;
+        std.debug.print("reloaded internal start page.\n", .{});
+        return;
+    }
+
     _ = msg0(Id, webview, sel("reload"));
+}
+
+fn loadInternalStartPage(webview: Id) !void {
+    const html_z = try std.heap.page_allocator.dupeZ(u8, start_page.html);
+    _ = msg2(
+        Id,
+        webview,
+        sel("loadHTMLString:baseURL:"),
+        nsString(html_z),
+        @as(Id, null),
+    );
+    current_page_is_internal = true;
 }
 
 fn getIvar(object: Id, name: [:0]const u8) Id {

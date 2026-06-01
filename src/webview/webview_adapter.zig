@@ -16,4 +16,8 @@ pub const WebViewAdapter = struct {
     pub fn load(self: *WebViewAdapter, url: []const u8) !void {
         try self.platform.load(url);
     }
+
+    pub fn loadHtml(self: *WebViewAdapter, html: []const u8, base_url: []const u8) !void {
+        try self.platform.loadHtml(html, base_url);
+    }
 };

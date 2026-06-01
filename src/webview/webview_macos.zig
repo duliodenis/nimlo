@@ -79,6 +79,23 @@ pub const MacOSWebView = struct {
         _ = msg1(Id, self.handle, sel("loadRequest:"), request);
         std.debug.print("macOS WKWebView loading: {s}\n", .{url});
     }
+
+    pub fn loadHtml(self: *MacOSWebView, html: []const u8, base_url: []const u8) !void {
+        if (self.handle == null) return error.MacOSWebViewUnavailable;
+
+        const html_z = try std.heap.page_allocator.dupeZ(u8, html);
+
+        // Keep Nimlo's internal route out of LaunchServices until we explicitly
+        // register and handle the nimlo:// URL scheme.
+        _ = msg2(
+            Id,
+            self.handle,
+            sel("loadHTMLString:baseURL:"),
+            nsString(html_z),
+            @as(Id, null),
+        );
+        std.debug.print("macOS WKWebView loading internal page: {s}\n", .{base_url});
+    }
 };
 
 fn cls(name: [:0]const u8) Class {
@@ -104,13 +121,9 @@ fn msg1(comptime ReturnType: type, receiver: Id, selector: Sel, arg1: anytype) R
     return @as(Fn, @ptrCast(&objc_msgSend))(receiver, selector, arg1);
 }
 
-fn msg2(
-    comptime ReturnType: type,
-    receiver: Id,
-    selector: Sel,
-    arg1: CGRect,
-    arg2: Id,
-) ReturnType {
-    const Fn = *const fn (Id, Sel, CGRect, Id) callconv(.c) ReturnType;
+fn msg2(comptime ReturnType: type, receiver: Id, selector: Sel, arg1: anytype, arg2: anytype) ReturnType {
+    const Arg1 = @TypeOf(arg1);
+    const Arg2 = @TypeOf(arg2);
+    const Fn = *const fn (Id, Sel, Arg1, Arg2) callconv(.c) ReturnType;
     return @as(Fn, @ptrCast(&objc_msgSend))(receiver, selector, arg1, arg2);
 }

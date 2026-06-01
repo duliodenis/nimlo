@@ -16,4 +16,10 @@ pub const StubWebView = struct {
         _ = self;
         _ = url;
     }
+
+    pub fn loadHtml(self: *StubWebView, html: []const u8, base_url: []const u8) !void {
+        _ = self;
+        _ = html;
+        _ = base_url;
+    }
 };

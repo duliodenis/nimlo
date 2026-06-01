@@ -2,6 +2,7 @@ const std = @import("std");
 const browser = @import("../browser/browser.zig");
 const preferences = @import("../storage/preferences.zig");
 const private_mode = @import("../privacy/private_mode.zig");
+const start_page = @import("../ui/start_page.zig");
 const window = @import("window.zig");
 const webview = @import("../webview/webview_adapter.zig");
 
@@ -19,9 +20,18 @@ pub fn run() !void {
     // TODO(app shell): add browser chrome, commands, menus, and shortcuts.
     // TODO(webview): replace the scaffold with a real system WebView mount.
     try app_window.attachWebView(&engine);
-    try engine.load("https://example.com");
+    try loadHomepage(&engine, config.homepage_url);
     try core.start();
 
     std.debug.print("Nimlo app shell placeholder ready.\n", .{});
     try app_window.show();
+}
+
+fn loadHomepage(engine: *webview.WebViewAdapter, homepage_url: []const u8) !void {
+    if (std.mem.eql(u8, homepage_url, "nimlo://start")) {
+        try engine.loadHtml(start_page.html, homepage_url);
+        return;
+    }
+
+    try engine.load(homepage_url);
 }

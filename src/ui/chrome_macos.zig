@@ -45,6 +45,7 @@ extern "c" fn objc_msgSend() void;
 
 // TODO(browser core): replace this single-window flag with real navigation state.
 var current_page_is_internal = false;
+var current_address_field: Id = null;
 
 pub fn install(window_handle: Id, content_view: Id, bounds: CGRect, webview: Id) !Id {
     installAddressBarTargetClass();
@@ -59,6 +60,7 @@ pub fn noteExternalLoad() void {
 
 pub fn noteInternalLoad() void {
     current_page_is_internal = true;
+    setCurrentAddress("nimlo://start");
 }
 
 fn addToolbar(content_view: Id, bounds: CGRect, webview: Id) !Id {
@@ -98,12 +100,15 @@ fn addToolbar(content_view: Id, bounds: CGRect, webview: Id) !Id {
     if (text_field == null) return error.MacOSAddressFieldUnavailable;
 
     _ = c.object_setInstanceVariable(@ptrCast(@alignCast(target.?)), "addressField", text_field);
+    current_address_field = text_field;
 
     msg1(void, text_field, sel("setAutoresizingMask:"), NSViewTopPinnedWidth);
     msg1(void, text_field, sel("setPlaceholderString:"), nsString("Search or enter URL"));
+    msg1(void, text_field, sel("setFont:"), msg1(Id, cls("NSFont"), sel("systemFontOfSize:"), @as(CGFloat, 13)));
     msg1(void, text_field, sel("setTarget:"), target);
     msg1(void, text_field, sel("setAction:"), sel("addressSubmitted:"));
     msg1(void, content_view, sel("addSubview:"), text_field);
+    msg1(void, webview, sel("setNavigationDelegate:"), target);
 
     return text_field;
 }
@@ -173,6 +178,30 @@ fn installAddressBarTargetClass() void {
         c.sel_registerName("reload:"),
         @ptrCast(&reload),
         "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("webView:didStartProvisionalNavigation:"),
+        @ptrCast(&navigationChanged),
+        "v@:@@",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("webView:didReceiveServerRedirectForProvisionalNavigation:"),
+        @ptrCast(&navigationChanged),
+        "v@:@@",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("webView:didCommitNavigation:"),
+        @ptrCast(&navigationChanged),
+        "v@:@@",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("webView:didFinishNavigation:"),
+        @ptrCast(&navigationChanged),
+        "v@:@@",
     );
 
     c.objc_registerClassPair(target_class);
@@ -246,6 +275,38 @@ fn loadInternalStartPage(webview: Id) !void {
         @as(Id, null),
     );
     noteInternalLoad();
+}
+
+fn navigationChanged(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
+    _ = target;
+    updateAddressFromWebView(webview);
+}
+
+fn updateAddressFromWebView(webview: Id) void {
+    const url = msg0(Id, webview, sel("URL"));
+    if (url == null) {
+        if (current_page_is_internal) setCurrentAddress("nimlo://start");
+        return;
+    }
+
+    const absolute = msg0(Id, url, sel("absoluteString"));
+    const raw = msg0(?[*:0]const u8, absolute, sel("UTF8String")) orelse return;
+    const address = std.mem.span(raw);
+    if (address.len == 0) return;
+
+    if (current_page_is_internal and std.mem.startsWith(u8, address, "about:")) {
+        setCurrentAddress("nimlo://start");
+        return;
+    }
+
+    current_page_is_internal = false;
+    setCurrentAddress(address);
+}
+
+fn setCurrentAddress(address: [:0]const u8) void {
+    if (current_address_field) |address_field| {
+        msg1(void, address_field, sel("setStringValue:"), nsString(address));
+    }
 }
 
 fn getIvar(object: Id, name: [:0]const u8) Id {

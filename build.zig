@@ -84,9 +84,25 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_tab_manager_tests = b.addRunArtifact(tab_manager_tests);
+    const browser_tests = b.addTest(.{
+        .name = "browser-tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/browser_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    if (target.result.os.tag == .macos) {
+        browser_tests.root_module.linkSystemLibrary("c", .{});
+        browser_tests.root_module.linkSystemLibrary("objc", .{});
+        browser_tests.root_module.linkFramework("AppKit", .{});
+        browser_tests.root_module.linkFramework("WebKit", .{});
+    }
+    const run_browser_tests = b.addRunArtifact(browser_tests);
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_url_input_tests.step);
     test_step.dependOn(&run_tab_tests.step);
     test_step.dependOn(&run_tab_manager_tests.step);
+    test_step.dependOn(&run_browser_tests.step);
 }

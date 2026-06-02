@@ -72,3 +72,93 @@ pub const Browser = struct {
         };
     }
 };
+
+test "start creates one active startup tab" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.start();
+
+    try std.testing.expectEqual(@as(usize, 1), browser.tabs.len());
+    const active_tab = browser.tabs.activeTab().?;
+    try std.testing.expectEqualStrings("nimlo://start", active_tab.current_url);
+    try std.testing.expectEqual(tab_model.LoadingState.idle, active_tab.loading_state);
+}
+
+test "navigation event updates active tab state" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.start();
+    webview_events.emitNavigation(.{
+        .url = "https://example.com/docs",
+        .title = "Example Docs",
+        .loading_state = .idle,
+        .can_go_back = true,
+        .can_go_forward = false,
+    });
+
+    const active_tab = browser.tabs.activeTab().?;
+    try std.testing.expectEqualStrings("https://example.com/docs", active_tab.current_url);
+    try std.testing.expectEqualStrings("Example Docs", active_tab.title);
+    try std.testing.expectEqual(tab_model.LoadingState.idle, active_tab.loading_state);
+    try std.testing.expect(active_tab.can_go_back);
+    try std.testing.expect(!active_tab.can_go_forward);
+}
+
+test "navigation event maps loading state" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.start();
+    webview_events.emitNavigation(.{
+        .url = "https://example.com",
+        .title = "Example",
+        .loading_state = .loading,
+    });
+    try std.testing.expectEqual(tab_model.LoadingState.loading, browser.tabs.activeTab().?.loading_state);
+
+    webview_events.emitNavigation(.{
+        .url = "https://example.com",
+        .title = "Example",
+        .loading_state = .failed,
+    });
+    try std.testing.expectEqual(tab_model.LoadingState.failed, browser.tabs.activeTab().?.loading_state);
+
+    webview_events.emitNavigation(.{
+        .url = "https://example.com",
+        .title = "Example",
+        .loading_state = .idle,
+    });
+    try std.testing.expectEqual(tab_model.LoadingState.idle, browser.tabs.activeTab().?.loading_state);
+}
+
+test "start does not create duplicate startup tabs" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.start();
+    try browser.start();
+
+    try std.testing.expectEqual(@as(usize, 1), browser.tabs.len());
+}

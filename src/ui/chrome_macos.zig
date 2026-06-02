@@ -38,11 +38,13 @@ const address_field_margin: CGFloat = 12;
 const nav_button_size: CGFloat = 28;
 const nav_button_gap: CGFloat = 8;
 const tab_width: CGFloat = 220;
+const min_tab_width: CGFloat = 96;
 const tab_height: CGFloat = 28;
 const tab_icon_size: CGFloat = 16;
 const tab_margin: CGFloat = 12;
 const tab_label_x: CGFloat = 28;
 const inactive_tab_width: CGFloat = 176;
+const max_titlebar_tab_strip_width: CGFloat = 650;
 const titlebar_new_tab_button_size: CGFloat = 28;
 const titlebar_new_tab_button_gap: CGFloat = 4;
 
@@ -159,7 +161,7 @@ fn addTitlebarTabStrip(window_handle: Id, target: Id) !void {
             .y = 0,
         },
         .size = .{
-            .width = (tab_width * 2) + titlebar_new_tab_button_gap + titlebar_new_tab_button_size + tab_margin,
+            .width = max_titlebar_tab_strip_width,
             .height = tab_strip_height,
         },
     };
@@ -196,9 +198,11 @@ fn renderTitlebarTabs(tabs: []const webview_events.TabSnapshot) !void {
     var x: CGFloat = 0;
     var active_button: Id = null;
     const tab_count = tabs.len;
+    const tab_area_width = titlebarTabAreaWidth(container);
+    const tab_slot_width = tabWidthForCount(tab_count, tab_area_width);
 
     for (tabs) |tab| {
-        const width = if (tab.is_active or tab_count <= 2) tab_width else inactive_tab_width;
+        const width = if (tab_count <= 2) tab_width else tab_slot_width;
         const button = try addTitlebarTabButton(container, target, tab, x, width);
         if (tab.is_active) {
             active_button = button;
@@ -322,6 +326,21 @@ fn addTitlebarNewTabButton(container: Id, target: Id, x: CGFloat) !Id {
     msg1(void, button, sel("setAction:"), sel("newTab:"));
     msg1(void, container, sel("addSubview:"), button);
     return button;
+}
+
+fn titlebarTabAreaWidth(container: Id) CGFloat {
+    const bounds = msg0(CGRect, container, sel("bounds"));
+    const reserved = titlebar_new_tab_button_size + titlebar_new_tab_button_gap + tab_margin;
+    return @max(min_tab_width, bounds.size.width - reserved);
+}
+
+fn tabWidthForCount(tab_count: usize, tab_area_width: CGFloat) CGFloat {
+    if (tab_count == 0) return tab_width;
+
+    const count: CGFloat = @floatFromInt(tab_count);
+    const total_gaps = if (tab_count > 1) titlebar_new_tab_button_gap * @as(CGFloat, @floatFromInt(tab_count - 1)) else 0;
+    const available = @max(min_tab_width, tab_area_width - total_gaps);
+    return std.math.clamp(available / count, min_tab_width, inactive_tab_width);
 }
 
 fn handleTabsChanged(_: *anyopaque, tabs: []const webview_events.TabSnapshot) void {

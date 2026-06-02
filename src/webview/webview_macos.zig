@@ -40,6 +40,16 @@ pub const MacOSWebView = struct {
             },
         };
         const configuration = msg0(Id, msg0(Id, cls("WKWebViewConfiguration"), sel("alloc")), sel("init"));
+        if (configuration == null) return error.MacOSWebViewConfigurationUnavailable;
+
+        // Keep the MVP privacy-first and avoid WebKit creating Keychain-backed
+        // persistent WebCrypto storage before Nimlo has explicit storage policy.
+        const data_store = msg0(Id, cls("WKWebsiteDataStore"), sel("nonPersistentDataStore"));
+        if (data_store != null) {
+            msg1(void, configuration, sel("setWebsiteDataStore:"), data_store);
+        }
+        configurePrivacyPreferences(configuration);
+
         const webview = msg2(
             Id,
             msg0(Id, cls("WKWebView"), sel("alloc")),
@@ -92,6 +102,19 @@ pub const MacOSWebView = struct {
         std.debug.print("macOS WKWebView loading internal page: {s}\n", .{base_url});
     }
 };
+
+fn configurePrivacyPreferences(configuration: Id) void {
+    const preferences = msg0(Id, msg0(Id, cls("WKPreferences"), sel("alloc")), sel("init"));
+    if (preferences == null) return;
+
+    // TODO(privacy): replace this private WebKit selector with explicit site
+    // storage policy once Nimlo has settings and persistent profiles.
+    if (msg1(bool, preferences, sel("respondsToSelector:"), sel("_setStorageAPIEnabled:"))) {
+        msg1(void, preferences, sel("_setStorageAPIEnabled:"), false);
+    }
+
+    msg1(void, configuration, sel("setPreferences:"), preferences);
+}
 
 fn cls(name: [:0]const u8) Class {
     return @ptrCast(c.objc_getClass(name));

@@ -46,8 +46,10 @@ extern "c" fn objc_msgSend() void;
 // TODO(browser core): replace this single-window flag with real navigation state.
 var current_page_is_internal = false;
 var current_address_field: Id = null;
+var current_window: Id = null;
 
 pub fn install(window_handle: Id, content_view: Id, bounds: CGRect, webview: Id) !Id {
+    current_window = window_handle;
     installAddressBarTargetClass();
     const address_field = try addToolbar(content_view, bounds, webview);
     msg1(void, window_handle, sel("makeFirstResponder:"), address_field);
@@ -61,6 +63,7 @@ pub fn noteExternalLoad() void {
 pub fn noteInternalLoad() void {
     current_page_is_internal = true;
     setCurrentAddress("nimlo://start");
+    setWindowTitle("Nimlo");
 }
 
 fn addToolbar(content_view: Id, bounds: CGRect, webview: Id) !Id {
@@ -200,7 +203,7 @@ fn installAddressBarTargetClass() void {
     _ = c.class_addMethod(
         target_class,
         c.sel_registerName("webView:didFinishNavigation:"),
-        @ptrCast(&navigationChanged),
+        @ptrCast(&navigationFinished),
         "v@:@@",
     );
 
@@ -282,6 +285,12 @@ fn navigationChanged(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
     updateAddressFromWebView(webview);
 }
 
+fn navigationFinished(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
+    _ = target;
+    updateAddressFromWebView(webview);
+    updateWindowTitleFromWebView(webview);
+}
+
 fn updateAddressFromWebView(webview: Id) void {
     const url = msg0(Id, webview, sel("URL"));
     if (url == null) {
@@ -303,9 +312,46 @@ fn updateAddressFromWebView(webview: Id) void {
     setCurrentAddress(address);
 }
 
+fn updateWindowTitleFromWebView(webview: Id) void {
+    if (current_page_is_internal) {
+        setWindowTitle("Nimlo");
+        return;
+    }
+
+    const title = msg0(Id, webview, sel("title"));
+    if (title == null) {
+        setWindowTitle("Nimlo");
+        return;
+    }
+
+    const raw = msg0(?[*:0]const u8, title, sel("UTF8String")) orelse {
+        setWindowTitle("Nimlo");
+        return;
+    };
+    const page_title = std.mem.span(raw);
+    if (page_title.len == 0) {
+        setWindowTitle("Nimlo");
+        return;
+    }
+
+    const title_text = std.fmt.allocPrint(
+        std.heap.page_allocator,
+        "{s} - Nimlo",
+        .{page_title},
+    ) catch return;
+    const full_title = std.heap.page_allocator.dupeZ(u8, title_text) catch return;
+    setWindowTitle(full_title);
+}
+
 fn setCurrentAddress(address: [:0]const u8) void {
     if (current_address_field) |address_field| {
         msg1(void, address_field, sel("setStringValue:"), nsString(address));
+    }
+}
+
+fn setWindowTitle(title: [:0]const u8) void {
+    if (current_window) |window| {
+        msg1(void, window, sel("setTitle:"), nsString(title));
     }
 }
 

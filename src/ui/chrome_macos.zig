@@ -49,7 +49,9 @@ extern "c" fn objc_msgSend() void;
 // TODO(browser core): replace this single-window flag with real navigation state.
 var current_page_is_internal = false;
 var current_address_field: Id = null;
+var current_reload_button: Id = null;
 var current_window: Id = null;
+var current_page_is_loading = false;
 
 pub fn install(window_handle: Id, content_view: Id, bounds: CGRect, webview: Id) !Id {
     current_window = window_handle;
@@ -79,11 +81,11 @@ fn addToolbar(content_view: Id, bounds: CGRect, webview: Id) !Id {
     const button_y = toolbarControlY(bounds, nav_button_size);
     var button_x = address_field_margin;
 
-    try addToolbarButton(content_view, target, "chevron.left", "Back", "goBack:", button_x, button_y);
+    _ = try addToolbarButton(content_view, target, "chevron.left", "Back", "goBack:", button_x, button_y);
     button_x += nav_button_size + nav_button_gap;
-    try addToolbarButton(content_view, target, "chevron.right", "Forward", "goForward:", button_x, button_y);
+    _ = try addToolbarButton(content_view, target, "chevron.right", "Forward", "goForward:", button_x, button_y);
     button_x += nav_button_size + nav_button_gap;
-    try addToolbarButton(content_view, target, "arrow.clockwise", "Reload", "reload:", button_x, button_y);
+    current_reload_button = try addToolbarButton(content_view, target, "arrow.clockwise", "Reload", "reload:", button_x, button_y);
 
     const address_x = button_x + nav_button_size + nav_button_gap;
     const address_frame = CGRect{
@@ -127,7 +129,7 @@ fn addToolbarButton(
     action: [:0]const u8,
     x: CGFloat,
     y: CGFloat,
-) !void {
+) !Id {
     const frame = CGRect{
         .origin = .{ .x = x, .y = y },
         .size = .{ .width = nav_button_size, .height = nav_button_size },
@@ -156,6 +158,7 @@ fn addToolbarButton(
     msg1(void, button, sel("setTarget:"), target);
     msg1(void, button, sel("setAction:"), sel(action));
     msg1(void, content_view, sel("addSubview:"), button);
+    return button;
 }
 
 fn systemSymbol(symbol_name: [:0]const u8, accessibility_description: [:0]const u8) Id {
@@ -183,6 +186,7 @@ fn fallbackSymbolImage(symbol_name: [:0]const u8) Id {
     if (std.mem.eql(u8, symbol_name, "chevron.left")) return msg1(Id, cls("NSImage"), sel("imageNamed:"), nsString("NSGoLeftTemplate"));
     if (std.mem.eql(u8, symbol_name, "chevron.right")) return msg1(Id, cls("NSImage"), sel("imageNamed:"), nsString("NSGoRightTemplate"));
     if (std.mem.eql(u8, symbol_name, "arrow.clockwise")) return msg1(Id, cls("NSImage"), sel("imageNamed:"), nsString("NSRefreshTemplate"));
+    if (std.mem.eql(u8, symbol_name, "xmark")) return msg1(Id, cls("NSImage"), sel("imageNamed:"), nsString("NSStopProgressTemplate"));
 
     return null;
 }
@@ -191,6 +195,7 @@ fn fallbackButtonTitle(symbol_name: [:0]const u8) [:0]const u8 {
     if (std.mem.eql(u8, symbol_name, "chevron.left")) return "<";
     if (std.mem.eql(u8, symbol_name, "chevron.right")) return ">";
     if (std.mem.eql(u8, symbol_name, "arrow.clockwise")) return "R";
+    if (std.mem.eql(u8, symbol_name, "xmark")) return "X";
 
     return "?";
 }
@@ -235,7 +240,7 @@ fn installAddressBarTargetClass() void {
     _ = c.class_addMethod(
         target_class,
         c.sel_registerName("webView:didStartProvisionalNavigation:"),
-        @ptrCast(&navigationChanged),
+        @ptrCast(&navigationStarted),
         "v@:@@",
     );
     _ = c.class_addMethod(
@@ -255,6 +260,18 @@ fn installAddressBarTargetClass() void {
         c.sel_registerName("webView:didFinishNavigation:"),
         @ptrCast(&navigationFinished),
         "v@:@@",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("webView:didFailNavigation:withError:"),
+        @ptrCast(&navigationFailed),
+        "v@:@@@",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("webView:didFailProvisionalNavigation:withError:"),
+        @ptrCast(&navigationFailed),
+        "v@:@@@",
     );
 
     c.objc_registerClassPair(target_class);
@@ -309,6 +326,12 @@ fn goForward(target: Id, _: Sel, _: Id) callconv(.c) void {
 fn reload(target: Id, _: Sel, _: Id) callconv(.c) void {
     const webview = getIvar(target, "webView") orelse return;
 
+    if (current_page_is_loading) {
+        _ = msg0(Id, webview, sel("stopLoading"));
+        setLoadingState(false);
+        return;
+    }
+
     if (current_page_is_internal) {
         loadInternalStartPage(webview) catch return;
         std.debug.print("reloaded internal start page.\n", .{});
@@ -330,6 +353,12 @@ fn loadInternalStartPage(webview: Id) !void {
     noteInternalLoad();
 }
 
+fn navigationStarted(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
+    _ = target;
+    setLoadingState(true);
+    updateAddressFromWebView(webview);
+}
+
 fn navigationChanged(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
     _ = target;
     updateAddressFromWebView(webview);
@@ -337,8 +366,15 @@ fn navigationChanged(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
 
 fn navigationFinished(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
     _ = target;
+    setLoadingState(false);
     updateAddressFromWebView(webview);
     updateWindowTitleFromWebView(webview);
+}
+
+fn navigationFailed(target: Id, _: Sel, webview: Id, _: Id, _: Id) callconv(.c) void {
+    _ = target;
+    setLoadingState(false);
+    updateAddressFromWebView(webview);
 }
 
 fn updateAddressFromWebView(webview: Id) void {
@@ -403,6 +439,30 @@ fn setWindowTitle(title: [:0]const u8) void {
     if (current_window) |window| {
         msg1(void, window, sel("setTitle:"), nsString(title));
     }
+}
+
+fn setLoadingState(is_loading: bool) void {
+    current_page_is_loading = is_loading;
+
+    if (current_reload_button) |button| {
+        if (is_loading) {
+            setToolbarButtonSymbol(button, "xmark", "Stop");
+        } else {
+            setToolbarButtonSymbol(button, "arrow.clockwise", "Reload");
+        }
+    }
+}
+
+fn setToolbarButtonSymbol(button: Id, symbol_name: [:0]const u8, tooltip: [:0]const u8) void {
+    const symbol = systemSymbol(symbol_name, tooltip);
+    const image = if (symbol) |value| value else fallbackSymbolImage(symbol_name);
+    if (image != null) {
+        msg1(void, button, sel("setImage:"), image);
+        msg1(void, button, sel("setTitle:"), nsString(""));
+    } else {
+        msg1(void, button, sel("setTitle:"), nsString(fallbackButtonTitle(symbol_name)));
+    }
+    msg1(void, button, sel("setToolTip:"), nsString(tooltip));
 }
 
 fn getIvar(object: Id, name: [:0]const u8) Id {

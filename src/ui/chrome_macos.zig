@@ -38,13 +38,13 @@ const address_field_margin: CGFloat = 12;
 const nav_button_size: CGFloat = 28;
 const nav_button_gap: CGFloat = 8;
 const tab_width: CGFloat = 220;
-const min_tab_width: CGFloat = 96;
+const min_tab_width: CGFloat = 76;
 const tab_height: CGFloat = 28;
 const tab_icon_size: CGFloat = 16;
 const tab_margin: CGFloat = 12;
 const tab_label_x: CGFloat = 28;
-const inactive_tab_width: CGFloat = 176;
-const max_titlebar_tab_strip_width: CGFloat = 650;
+const inactive_tab_width: CGFloat = 160;
+const max_titlebar_tab_strip_width: CGFloat = 900;
 const titlebar_new_tab_button_size: CGFloat = 28;
 const titlebar_new_tab_button_gap: CGFloat = 4;
 

@@ -1,4 +1,7 @@
 const platform = @import("webview_platform.zig");
+const webview_events = @import("webview_events.zig");
+
+pub const EventSink = webview_events.EventSink;
 
 pub const WebViewAdapter = struct {
     platform: platform.PlatformWebView,
@@ -19,5 +22,10 @@ pub const WebViewAdapter = struct {
 
     pub fn loadHtml(self: *WebViewAdapter, html: []const u8, base_url: []const u8) !void {
         try self.platform.loadHtml(html, base_url);
+    }
+
+    pub fn setEventSink(self: *WebViewAdapter, sink: EventSink) void {
+        _ = self;
+        webview_events.setSink(sink);
     }
 };

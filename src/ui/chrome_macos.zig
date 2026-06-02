@@ -1,6 +1,7 @@
 const std = @import("std");
 const url_input = @import("../browser/url_input.zig");
 const start_page = @import("start_page.zig");
+const webview_events = @import("../webview/webview_events.zig");
 
 const c = @cImport({
     @cInclude("objc/runtime.h");
@@ -69,6 +70,11 @@ pub fn noteInternalLoad() void {
     current_page_is_internal = true;
     setCurrentAddress("nimlo://start");
     setWindowTitle("Nimlo");
+    webview_events.emitNavigation(.{
+        .url = "nimlo://start",
+        .title = "Nimlo",
+        .loading_state = .idle,
+    });
 }
 
 fn addToolbar(content_view: Id, bounds: CGRect, webview: Id) !Id {
@@ -357,11 +363,13 @@ fn navigationStarted(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
     _ = target;
     setLoadingState(true);
     updateAddressFromWebView(webview);
+    emitNavigationFromWebView(webview, .loading);
 }
 
 fn navigationChanged(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
     _ = target;
     updateAddressFromWebView(webview);
+    emitNavigationFromWebView(webview, if (current_page_is_loading) .loading else .idle);
 }
 
 fn navigationFinished(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
@@ -369,12 +377,14 @@ fn navigationFinished(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void 
     setLoadingState(false);
     updateAddressFromWebView(webview);
     updateWindowTitleFromWebView(webview);
+    emitNavigationFromWebView(webview, .idle);
 }
 
 fn navigationFailed(target: Id, _: Sel, webview: Id, _: Id, _: Id) callconv(.c) void {
     _ = target;
     setLoadingState(false);
     updateAddressFromWebView(webview);
+    emitNavigationFromWebView(webview, .failed);
 }
 
 fn updateAddressFromWebView(webview: Id) void {
@@ -439,6 +449,52 @@ fn setWindowTitle(title: [:0]const u8) void {
     if (current_window) |window| {
         msg1(void, window, sel("setTitle:"), nsString(title));
     }
+}
+
+fn emitNavigationFromWebView(webview: Id, loading_state: webview_events.LoadingState) void {
+    var url_text: []const u8 = "";
+    var title_text: []const u8 = "";
+
+    if (current_page_is_internal) {
+        url_text = "nimlo://start";
+        title_text = "Nimlo";
+    } else {
+        if (webViewUrl(webview)) |url| {
+            url_text = url;
+        }
+
+        if (webViewTitle(webview)) |title| {
+            title_text = title;
+        }
+    }
+
+    if (url_text.len == 0) return;
+
+    webview_events.emitNavigation(.{
+        .url = url_text,
+        .title = title_text,
+        .loading_state = loading_state,
+        .can_go_back = msg0(bool, webview, sel("canGoBack")),
+        .can_go_forward = msg0(bool, webview, sel("canGoForward")),
+    });
+}
+
+fn webViewUrl(webview: Id) ?[]const u8 {
+    const url = msg0(Id, webview, sel("URL"));
+    if (url == null) return null;
+
+    const absolute = msg0(Id, url, sel("absoluteString"));
+    const raw = msg0(?[*:0]const u8, absolute, sel("UTF8String")) orelse return null;
+    return std.mem.span(raw);
+}
+
+fn webViewTitle(webview: Id) ?[]const u8 {
+    const title = msg0(Id, webview, sel("title"));
+    if (title == null) return null;
+
+    const raw = msg0(?[*:0]const u8, title, sel("UTF8String")) orelse return null;
+    const text = std.mem.span(raw);
+    return if (text.len == 0) null else text;
 }
 
 fn setLoadingState(is_loading: bool) void {

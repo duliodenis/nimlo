@@ -16,12 +16,13 @@ pub fn run() !void {
     });
     var engine = webview.WebViewAdapter.init();
     var core = browser.Browser.init(config, privacy, &engine);
+    defer core.deinit();
 
     // TODO(app shell): add browser chrome, commands, menus, and shortcuts.
     // TODO(webview): replace the scaffold with a real system WebView mount.
+    try core.start();
     try app_window.attachWebView(&engine);
     try loadHomepage(&engine, config.homepage_url);
-    try core.start();
 
     std.debug.print("Nimlo app shell placeholder ready.\n", .{});
     try app_window.show();

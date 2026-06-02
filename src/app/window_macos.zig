@@ -29,6 +29,7 @@ const CGRect = extern struct {
 
 const NSApplicationActivationPolicyRegular: isize = 0;
 const NSBackingStoreBuffered: usize = 2;
+const NSWindowTitleHidden: isize = 1;
 const NSWindowStyleMaskTitled: usize = 1 << 0;
 const NSWindowStyleMaskClosable: usize = 1 << 1;
 const NSWindowStyleMaskMiniaturizable: usize = 1 << 2;
@@ -117,6 +118,7 @@ fn createNativeWindow(title: [:0]const u8, width: u32, height: u32) !Id {
     if (handle == null) return error.MacOSWindowUnavailable;
 
     msg1(void, handle, sel("setTitle:"), nsString(title));
+    msg1(void, handle, sel("setTitleVisibility:"), NSWindowTitleHidden);
     return handle;
 }
 

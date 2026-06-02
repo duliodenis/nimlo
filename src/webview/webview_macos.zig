@@ -36,7 +36,7 @@ pub const MacOSWebView = struct {
             .origin = .{ .x = 0, .y = 0 },
             .size = .{
                 .width = bounds.size.width,
-                .height = @max(1, bounds.size.height - chrome.toolbar_height),
+                .height = @max(1, bounds.size.height - chrome.chrome_height),
             },
         };
         const configuration = msg0(Id, msg0(Id, cls("WKWebViewConfiguration"), sel("alloc")), sel("init"));

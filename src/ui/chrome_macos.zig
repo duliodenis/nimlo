@@ -29,15 +29,25 @@ pub const CGRect = extern struct {
     size: CGSize,
 };
 
+pub const tab_strip_height: CGFloat = 36;
 pub const toolbar_height: CGFloat = 48;
+pub const chrome_height: CGFloat = toolbar_height;
 
 const address_field_height: CGFloat = 28;
 const address_field_margin: CGFloat = 12;
 const nav_button_size: CGFloat = 28;
 const nav_button_gap: CGFloat = 8;
+const tab_width: CGFloat = 220;
+const tab_height: CGFloat = 28;
+const tab_icon_size: CGFloat = 16;
+const tab_margin: CGFloat = 12;
+const tab_label_x: CGFloat = 28;
 
 const NSButtonTypeMomentaryChange: usize = 5;
+const NSImageScaleProportionallyDown: isize = 1;
 const NSImageSymbolScaleMedium: isize = 2;
+const NSLayoutAttributeLeft: isize = 1;
+const NSTextAlignmentCenter: isize = 1;
 
 const NSViewMinYMargin: usize = 1 << 3;
 const NSViewWidthSizable: usize = 1 << 1;
@@ -51,6 +61,8 @@ extern "c" fn objc_msgSend() void;
 var current_page_is_internal = false;
 var current_address_field: Id = null;
 var current_reload_button: Id = null;
+var current_tab_icon: Id = null;
+var current_tab_label: Id = null;
 var current_window: Id = null;
 var current_page_is_loading = false;
 
@@ -64,11 +76,14 @@ pub fn install(window_handle: Id, content_view: Id, bounds: CGRect, webview: Id)
 
 pub fn noteExternalLoad() void {
     current_page_is_internal = false;
+    setCurrentTabIcon(defaultFavicon());
 }
 
 pub fn noteInternalLoad() void {
     current_page_is_internal = true;
     setCurrentAddress("nimlo://start");
+    setCurrentTabIcon(systemSymbol("sparkles", "Nimlo"));
+    setCurrentTabTitle("Nimlo");
     setWindowTitle("Nimlo");
     webview_events.emitNavigation(.{
         .url = "nimlo://start",
@@ -83,6 +98,8 @@ fn addToolbar(content_view: Id, bounds: CGRect, webview: Id) !Id {
 
     _ = msg0(Id, target, sel("retain"));
     _ = c.object_setInstanceVariable(@ptrCast(@alignCast(target.?)), "webView", webview);
+
+    try addTitlebarTabStrip(current_window orelse return error.MacOSWindowUnavailable);
 
     const button_y = toolbarControlY(bounds, nav_button_size);
     var button_x = address_field_margin;
@@ -125,6 +142,76 @@ fn addToolbar(content_view: Id, bounds: CGRect, webview: Id) !Id {
     msg1(void, webview, sel("setNavigationDelegate:"), target);
 
     return text_field;
+}
+
+fn addTitlebarTabStrip(window_handle: Id) !void {
+    const container_frame = CGRect{
+        .origin = .{
+            .x = 0,
+            .y = 0,
+        },
+        .size = .{ .width = tab_width + tab_margin, .height = tab_strip_height },
+    };
+    const container = msg1(
+        Id,
+        msg0(Id, cls("NSView"), sel("alloc")),
+        sel("initWithFrame:"),
+        container_frame,
+    );
+    if (container == null) return error.MacOSTabStripUnavailable;
+
+    const icon_frame = CGRect{
+        .origin = .{
+            .x = 7,
+            .y = (tab_strip_height - tab_icon_size) / 2,
+        },
+        .size = .{ .width = tab_icon_size, .height = tab_icon_size },
+    };
+    const icon = msg1(
+        Id,
+        msg0(Id, cls("NSImageView"), sel("alloc")),
+        sel("initWithFrame:"),
+        icon_frame,
+    );
+    if (icon == null) return error.MacOSTabIconUnavailable;
+
+    const tab_frame = CGRect{
+        .origin = .{
+            .x = tab_label_x,
+            .y = (tab_strip_height - tab_height) / 2,
+        },
+        .size = .{ .width = tab_width - tab_label_x, .height = tab_height },
+    };
+    const label = msg1(
+        Id,
+        msg0(Id, cls("NSTextField"), sel("alloc")),
+        sel("initWithFrame:"),
+        tab_frame,
+    );
+    if (label == null) return error.MacOSTabLabelUnavailable;
+
+    current_tab_icon = icon;
+    current_tab_label = label;
+
+    msg1(void, icon, sel("setImageScaling:"), NSImageScaleProportionallyDown);
+    msg1(void, icon, sel("setImage:"), systemSymbol("sparkles", "Nimlo"));
+    msg1(void, container, sel("addSubview:"), icon);
+
+    msg1(void, label, sel("setAutoresizingMask:"), NSViewTopPinned);
+    msg1(void, label, sel("setStringValue:"), nsString("Nimlo"));
+    msg1(void, label, sel("setEditable:"), false);
+    msg1(void, label, sel("setSelectable:"), false);
+    msg1(void, label, sel("setBezeled:"), true);
+    msg1(void, label, sel("setAlignment:"), NSTextAlignmentCenter);
+    msg1(void, label, sel("setFont:"), msg1(Id, cls("NSFont"), sel("systemFontOfSize:"), @as(CGFloat, 13)));
+    msg1(void, container, sel("addSubview:"), label);
+
+    const controller = msg0(Id, msg0(Id, cls("NSTitlebarAccessoryViewController"), sel("alloc")), sel("init"));
+    if (controller == null) return error.MacOSTitlebarAccessoryUnavailable;
+
+    msg1(void, controller, sel("setView:"), container);
+    msg1(void, controller, sel("setLayoutAttribute:"), NSLayoutAttributeLeft);
+    msg1(void, window_handle, sel("addTitlebarAccessoryViewController:"), controller);
 }
 
 fn addToolbarButton(
@@ -207,7 +294,7 @@ fn fallbackButtonTitle(symbol_name: [:0]const u8) [:0]const u8 {
 }
 
 fn toolbarControlY(bounds: CGRect, height: CGFloat) CGFloat {
-    return bounds.size.height - toolbar_height + ((toolbar_height - height) / 2);
+    return bounds.size.height - chrome_height + ((toolbar_height - height) / 2);
 }
 
 fn installAddressBarTargetClass() void {
@@ -377,6 +464,7 @@ fn navigationFinished(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void 
     setLoadingState(false);
     updateAddressFromWebView(webview);
     updateWindowTitleFromWebView(webview);
+    updateFaviconFromWebView(webview);
     emitNavigationFromWebView(webview, .idle);
 }
 
@@ -410,25 +498,32 @@ fn updateAddressFromWebView(webview: Id) void {
 
 fn updateWindowTitleFromWebView(webview: Id) void {
     if (current_page_is_internal) {
+        setCurrentTabTitle("Nimlo");
         setWindowTitle("Nimlo");
         return;
     }
 
     const title = msg0(Id, webview, sel("title"));
     if (title == null) {
+        setCurrentTabTitle("Nimlo");
         setWindowTitle("Nimlo");
         return;
     }
 
     const raw = msg0(?[*:0]const u8, title, sel("UTF8String")) orelse {
+        setCurrentTabTitle("Nimlo");
         setWindowTitle("Nimlo");
         return;
     };
     const page_title = std.mem.span(raw);
     if (page_title.len == 0) {
+        setCurrentTabTitle("Nimlo");
         setWindowTitle("Nimlo");
         return;
     }
+
+    const tab_title = std.heap.page_allocator.dupeZ(u8, page_title) catch return;
+    setCurrentTabTitle(tab_title);
 
     const title_text = std.fmt.allocPrint(
         std.heap.page_allocator,
@@ -445,10 +540,62 @@ fn setCurrentAddress(address: [:0]const u8) void {
     }
 }
 
+fn setCurrentTabTitle(title: [:0]const u8) void {
+    if (current_tab_label) |label| {
+        msg1(void, label, sel("setStringValue:"), nsString(title));
+    }
+}
+
+fn setCurrentTabIcon(image: Id) void {
+    if (current_tab_icon) |icon| {
+        msg1(void, icon, sel("setImage:"), image);
+    }
+}
+
 fn setWindowTitle(title: [:0]const u8) void {
     if (current_window) |window| {
         msg1(void, window, sel("setTitle:"), nsString(title));
     }
+}
+
+fn updateFaviconFromWebView(webview: Id) void {
+    if (current_page_is_internal) {
+        setCurrentTabIcon(systemSymbol("sparkles", "Nimlo"));
+        return;
+    }
+
+    const favicon_url = rootFaviconUrl(webview) orelse {
+        setCurrentTabIcon(defaultFavicon());
+        return;
+    };
+    const ns_url = msg1(Id, cls("NSURL"), sel("URLWithString:"), nsString(favicon_url));
+    if (ns_url == null) {
+        setCurrentTabIcon(defaultFavicon());
+        return;
+    }
+
+    const image = msg1(Id, msg0(Id, cls("NSImage"), sel("alloc")), sel("initWithContentsOfURL:"), ns_url);
+    setCurrentTabIcon(if (image) |value| value else defaultFavicon());
+}
+
+fn rootFaviconUrl(webview: Id) ?[:0]const u8 {
+    const url = msg0(Id, webview, sel("URL"));
+    if (url == null) return null;
+
+    const scheme_value = msg0(Id, url, sel("scheme"));
+    const host_value = msg0(Id, url, sel("host"));
+    const raw_scheme = msg0(?[*:0]const u8, scheme_value, sel("UTF8String")) orelse return null;
+    const raw_host = msg0(?[*:0]const u8, host_value, sel("UTF8String")) orelse return null;
+    const scheme = std.mem.span(raw_scheme);
+    const host = std.mem.span(raw_host);
+
+    if (!std.mem.eql(u8, scheme, "http") and !std.mem.eql(u8, scheme, "https")) return null;
+    const favicon_url = std.fmt.allocPrint(std.heap.page_allocator, "{s}://{s}/favicon.ico", .{ scheme, host }) catch return null;
+    return std.heap.page_allocator.dupeZ(u8, favicon_url) catch null;
+}
+
+fn defaultFavicon() Id {
+    return systemSymbol("globe", "Website");
 }
 
 fn emitNavigationFromWebView(webview: Id, loading_state: webview_events.LoadingState) void {

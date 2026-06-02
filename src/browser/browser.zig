@@ -3,6 +3,7 @@ const preferences = @import("../storage/preferences.zig");
 const private_mode = @import("../privacy/private_mode.zig");
 const tab_manager = @import("tab_manager.zig");
 const tab_model = @import("tab.zig");
+const start_page = @import("../ui/start_page.zig");
 const webview = @import("../webview/webview_adapter.zig");
 const webview_events = @import("../webview/webview_events.zig");
 
@@ -41,11 +42,14 @@ pub const Browser = struct {
             .context = self,
             .on_navigation = handleNavigationEvent,
             .on_new_tab_requested = handleNewTabRequested,
+            .on_tab_activated_requested = handleTabActivatedRequested,
         });
+        self.publishTabsChanged();
     }
 
     pub fn deinit(self: *Browser) void {
         webview_events.clearSink();
+        webview_events.clearChromeSink();
         self.tabs.deinit();
     }
 
@@ -65,6 +69,7 @@ pub const Browser = struct {
             .can_go_back = event.can_go_back,
             .can_go_forward = event.can_go_forward,
         });
+        self.publishTabsChanged();
     }
 
     fn handleNewTabRequested(context: *anyopaque) void {
@@ -73,6 +78,41 @@ pub const Browser = struct {
             self.preferences.homepage_url,
             self.private_mode.enabled,
         ) catch return;
+        self.publishTabsChanged();
+    }
+
+    fn handleTabActivatedRequested(context: *anyopaque, tab_id: u64) void {
+        const self: *Browser = @ptrCast(@alignCast(context));
+        if (!self.tabs.activateTab(tab_id)) return;
+        const active_tab = self.tabs.activeTab() orelse return;
+
+        self.loadTab(active_tab.*) catch return;
+        self.publishTabsChanged();
+    }
+
+    fn loadTab(self: *Browser, tab: tab_model.Tab) !void {
+        if (std.mem.eql(u8, tab.current_url, "nimlo://start")) {
+            // TODO(internal pages): move start-page HTML into a browser-owned internal page registry.
+            try self.webview_adapter.loadHtml(start_page.html, tab.current_url);
+            return;
+        }
+
+        try self.webview_adapter.load(tab.current_url);
+    }
+
+    fn publishTabsChanged(self: *Browser) void {
+        const snapshots = self.allocator.alloc(webview_events.TabSnapshot, self.tabs.len()) catch return;
+        for (self.tabs.tabs.items, 0..) |tab, index| {
+            snapshots[index] = .{
+                .id = tab.id,
+                .title = tab.title,
+                .url = tab.current_url,
+                .favicon_url = tab.favicon_url,
+                .is_active = self.tabs.active_tab_id != null and self.tabs.active_tab_id.? == tab.id,
+            };
+        }
+
+        webview_events.emitTabsChanged(snapshots);
     }
 
     fn mapLoadingState(state: webview_events.LoadingState) tab_model.LoadingState {
@@ -192,4 +232,22 @@ test "new tab command creates and activates startup tab" {
     const active_tab = browser.tabs.activeTab().?;
     try std.testing.expectEqualStrings("nimlo://start", active_tab.current_url);
     try std.testing.expectEqualStrings("Nimlo", active_tab.title);
+}
+
+test "tab activation command switches active tab" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.start();
+    const first = browser.tabs.active_tab_id.?;
+    _ = try browser.tabs.createTab("https://example.com", false);
+
+    webview_events.emitTabActivatedRequested(first);
+
+    try std.testing.expectEqual(first, browser.tabs.active_tab_id.?);
 }

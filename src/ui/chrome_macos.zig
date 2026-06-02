@@ -42,15 +42,18 @@ const tab_height: CGFloat = 28;
 const tab_icon_size: CGFloat = 16;
 const tab_margin: CGFloat = 12;
 const tab_label_x: CGFloat = 28;
+const inactive_tab_width: CGFloat = 176;
 const titlebar_new_tab_button_size: CGFloat = 28;
 const titlebar_new_tab_button_gap: CGFloat = 4;
 
 const NSButtonTypeMomentaryChange: usize = 5;
+const NSImageLeft: isize = 2;
 const NSImageScaleProportionallyDown: isize = 1;
 const NSImageSymbolScaleMedium: isize = 2;
 const NSLayoutAttributeLeft: isize = 1;
 const NSTextAlignmentCenter: isize = 1;
 const NSUTF8StringEncoding: usize = 4;
+const NSLineBreakByTruncatingTail: isize = 4;
 
 const NSViewMinYMargin: usize = 1 << 3;
 const NSViewWidthSizable: usize = 1 << 1;
@@ -66,6 +69,8 @@ var current_address_field: Id = null;
 var current_reload_button: Id = null;
 var current_tab_icon: Id = null;
 var current_tab_label: Id = null;
+var current_tab_container: Id = null;
+var current_tab_target: Id = null;
 var current_window: Id = null;
 var current_page_is_loading = false;
 
@@ -154,7 +159,7 @@ fn addTitlebarTabStrip(window_handle: Id, target: Id) !void {
             .y = 0,
         },
         .size = .{
-            .width = tab_width + titlebar_new_tab_button_gap + titlebar_new_tab_button_size + tab_margin,
+            .width = (tab_width * 2) + titlebar_new_tab_button_gap + titlebar_new_tab_button_size + tab_margin,
             .height = tab_strip_height,
         },
     };
@@ -166,53 +171,13 @@ fn addTitlebarTabStrip(window_handle: Id, target: Id) !void {
     );
     if (container == null) return error.MacOSTabStripUnavailable;
 
-    const icon_frame = CGRect{
-        .origin = .{
-            .x = 7,
-            .y = (tab_strip_height - tab_icon_size) / 2,
-        },
-        .size = .{ .width = tab_icon_size, .height = tab_icon_size },
-    };
-    const icon = msg1(
-        Id,
-        msg0(Id, cls("NSImageView"), sel("alloc")),
-        sel("initWithFrame:"),
-        icon_frame,
-    );
-    if (icon == null) return error.MacOSTabIconUnavailable;
-
-    const tab_frame = CGRect{
-        .origin = .{
-            .x = tab_label_x,
-            .y = (tab_strip_height - tab_height) / 2,
-        },
-        .size = .{ .width = tab_width - tab_label_x, .height = tab_height },
-    };
-    const label = msg1(
-        Id,
-        msg0(Id, cls("NSTextField"), sel("alloc")),
-        sel("initWithFrame:"),
-        tab_frame,
-    );
-    if (label == null) return error.MacOSTabLabelUnavailable;
-
-    current_tab_icon = icon;
-    current_tab_label = label;
-
-    msg1(void, icon, sel("setImageScaling:"), NSImageScaleProportionallyDown);
-    msg1(void, icon, sel("setImage:"), systemSymbol("sparkles", "Nimlo"));
-    msg1(void, container, sel("addSubview:"), icon);
-
-    msg1(void, label, sel("setAutoresizingMask:"), NSViewTopPinned);
-    msg1(void, label, sel("setStringValue:"), nsString("Nimlo"));
-    msg1(void, label, sel("setEditable:"), false);
-    msg1(void, label, sel("setSelectable:"), false);
-    msg1(void, label, sel("setBezeled:"), true);
-    msg1(void, label, sel("setAlignment:"), NSTextAlignmentCenter);
-    msg1(void, label, sel("setFont:"), msg1(Id, cls("NSFont"), sel("systemFontOfSize:"), @as(CGFloat, 13)));
-    msg1(void, container, sel("addSubview:"), label);
-
-    _ = try addTitlebarNewTabButton(container, target);
+    current_tab_container = container;
+    current_tab_target = target;
+    try renderTitlebarTabs(&.{});
+    webview_events.setChromeSink(.{
+        .context = target.?,
+        .on_tabs_changed = handleTabsChanged,
+    });
 
     const controller = msg0(Id, msg0(Id, cls("NSTitlebarAccessoryViewController"), sel("alloc")), sel("init"));
     if (controller == null) return error.MacOSTitlebarAccessoryUnavailable;
@@ -222,10 +187,113 @@ fn addTitlebarTabStrip(window_handle: Id, target: Id) !void {
     msg1(void, window_handle, sel("addTitlebarAccessoryViewController:"), controller);
 }
 
-fn addTitlebarNewTabButton(container: Id, target: Id) !Id {
+fn renderTitlebarTabs(tabs: []const webview_events.TabSnapshot) !void {
+    const container = current_tab_container orelse return;
+    const target = current_tab_target orelse return;
+
+    removeAllSubviews(container);
+
+    var x: CGFloat = 0;
+    var active_button: Id = null;
+    const tab_count = tabs.len;
+
+    for (tabs) |tab| {
+        const width = if (tab.is_active or tab_count <= 2) tab_width else inactive_tab_width;
+        const button = try addTitlebarTabButton(container, target, tab, x, width);
+        if (tab.is_active) {
+            active_button = button;
+        }
+        x += width + titlebar_new_tab_button_gap;
+    }
+
+    if (tab_count == 0) {
+        const fallback: webview_events.TabSnapshot = .{
+            .id = 1,
+            .title = "Nimlo",
+            .url = "nimlo://start",
+            .is_active = true,
+        };
+        active_button = try addTitlebarTabButton(container, target, fallback, x, tab_width);
+        x += tab_width + titlebar_new_tab_button_gap;
+    }
+
+    current_tab_label = active_button;
+    current_tab_icon = active_button;
+    _ = try addTitlebarNewTabButton(container, target, x);
+}
+
+fn addTitlebarTabButton(container: Id, target: Id, tab: webview_events.TabSnapshot, x: CGFloat, width: CGFloat) !Id {
     const frame = CGRect{
         .origin = .{
-            .x = tab_width + titlebar_new_tab_button_gap,
+            .x = x,
+            .y = (tab_strip_height - tab_height) / 2,
+        },
+        .size = .{ .width = width, .height = tab_height },
+    };
+    const button = msg1(
+        Id,
+        msg0(Id, cls("NSButton"), sel("alloc")),
+        sel("initWithFrame:"),
+        frame,
+    );
+    if (button == null) return error.MacOSTabButtonUnavailable;
+
+    const title = tabDisplayTitle(tab.title, width) catch "Nimlo";
+    msg1(void, button, sel("setTitle:"), nsString(title));
+    msg1(void, button, sel("setToolTip:"), nsString(std.heap.page_allocator.dupeZ(u8, tab.title) catch "Nimlo"));
+    msg1(void, button, sel("setImage:"), tabImage(tab));
+    msg1(void, button, sel("setImagePosition:"), NSImageLeft);
+    msg1(void, button, sel("setAutoresizingMask:"), NSViewTopPinned);
+    msg1(void, button, sel("setBordered:"), tab.is_active);
+    msg1(void, button, sel("setButtonType:"), NSButtonTypeMomentaryChange);
+    msg1(void, button, sel("setFont:"), msg1(Id, cls("NSFont"), sel("systemFontOfSize:"), @as(CGFloat, 13)));
+    msg1(void, button, sel("setLineBreakMode:"), NSLineBreakByTruncatingTail);
+    if (msg0(Id, button, sel("cell"))) |cell| {
+        msg1(void, cell, sel("setWraps:"), false);
+        msg1(void, cell, sel("setUsesSingleLineMode:"), true);
+        msg1(void, cell, sel("setLineBreakMode:"), NSLineBreakByTruncatingTail);
+    }
+    msg1(void, button, sel("setTag:"), @as(isize, @intCast(tab.id)));
+    msg1(void, button, sel("setTarget:"), target);
+    msg1(void, button, sel("setAction:"), sel("activateTab:"));
+    msg1(void, container, sel("addSubview:"), button);
+    return button;
+}
+
+fn tabDisplayTitle(title: []const u8, width: CGFloat) ![:0]const u8 {
+    const max_chars: usize = if (width <= inactive_tab_width) 18 else 24;
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(std.heap.page_allocator);
+
+    var visible_chars: usize = 0;
+    var last_was_space = false;
+    for (title) |byte| {
+        const normalized: u8 = if (std.ascii.isWhitespace(byte)) ' ' else byte;
+        if (normalized == ' ' and (visible_chars == 0 or last_was_space)) continue;
+        if (visible_chars >= max_chars) break;
+
+        try output.append(std.heap.page_allocator, normalized);
+        visible_chars += 1;
+        last_was_space = normalized == ' ';
+    }
+
+    while (output.items.len > 0 and output.items[output.items.len - 1] == ' ') {
+        _ = output.pop();
+    }
+
+    if (title.len > output.items.len and output.items.len >= 3) {
+        output.items[output.items.len - 3] = '.';
+        output.items[output.items.len - 2] = '.';
+        output.items[output.items.len - 1] = '.';
+    }
+
+    return try output.toOwnedSliceSentinel(std.heap.page_allocator, 0);
+}
+
+fn addTitlebarNewTabButton(container: Id, target: Id, x: CGFloat) !Id {
+    const frame = CGRect{
+        .origin = .{
+            .x = x,
             .y = (tab_strip_height - titlebar_new_tab_button_size) / 2,
         },
         .size = .{ .width = titlebar_new_tab_button_size, .height = titlebar_new_tab_button_size },
@@ -254,6 +322,43 @@ fn addTitlebarNewTabButton(container: Id, target: Id) !Id {
     msg1(void, button, sel("setAction:"), sel("newTab:"));
     msg1(void, container, sel("addSubview:"), button);
     return button;
+}
+
+fn handleTabsChanged(_: *anyopaque, tabs: []const webview_events.TabSnapshot) void {
+    renderTitlebarTabs(tabs) catch return;
+}
+
+fn removeAllSubviews(view: Id) void {
+    const subviews = msg0(Id, view, sel("subviews"));
+    if (subviews != null) {
+        msg1(void, subviews, sel("makeObjectsPerformSelector:"), sel("removeFromSuperview"));
+    }
+}
+
+fn tabImage(tab: webview_events.TabSnapshot) Id {
+    if (tab.favicon_url.len > 0) {
+        const url_z = std.heap.page_allocator.dupeZ(u8, tab.favicon_url) catch return defaultFaviconForTab(tab);
+        const ns_url = msg1(Id, cls("NSURL"), sel("URLWithString:"), nsString(url_z));
+        if (ns_url != null) {
+            const image = msg1(Id, msg0(Id, cls("NSImage"), sel("alloc")), sel("initWithContentsOfURL:"), ns_url);
+            if (image != null) return sizedTabImage(image);
+        }
+    }
+
+    return sizedTabImage(defaultFaviconForTab(tab));
+}
+
+fn defaultFaviconForTab(tab: webview_events.TabSnapshot) Id {
+    if (std.mem.eql(u8, tab.url, "nimlo://start")) return systemSymbol("sparkles", "Nimlo");
+    return defaultFavicon();
+}
+
+fn sizedTabImage(image: Id) Id {
+    if (image != null) {
+        msg1(void, image, sel("setSize:"), CGSize{ .width = tab_icon_size, .height = tab_icon_size });
+    }
+
+    return image;
 }
 
 fn addToolbarButton(
@@ -380,6 +485,12 @@ fn installAddressBarTargetClass() void {
     );
     _ = c.class_addMethod(
         target_class,
+        c.sel_registerName("activateTab:"),
+        @ptrCast(&activateTab),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
         c.sel_registerName("webView:didStartProvisionalNavigation:"),
         @ptrCast(&navigationStarted),
         "v@:@@",
@@ -469,6 +580,13 @@ fn newTab(target: Id, _: Sel, _: Id) callconv(.c) void {
     webview_events.emitNewTabRequested();
     loadInternalStartPage(webview) catch return;
     std.debug.print("new tab requested.\n", .{});
+}
+
+fn activateTab(_: Id, _: Sel, sender: Id) callconv(.c) void {
+    const tab_id = msg0(isize, sender, sel("tag"));
+    if (tab_id <= 0) return;
+
+    webview_events.emitTabActivatedRequested(@intCast(tab_id));
 }
 
 fn reload(target: Id, _: Sel, _: Id) callconv(.c) void {
@@ -597,7 +715,7 @@ fn setCurrentAddress(address: [:0]const u8) void {
 
 fn setCurrentTabTitle(title: [:0]const u8) void {
     if (current_tab_label) |label| {
-        msg1(void, label, sel("setStringValue:"), nsString(title));
+        msg1(void, label, sel("setTitle:"), nsString(title));
     }
 }
 

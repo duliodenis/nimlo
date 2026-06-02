@@ -92,6 +92,11 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    browser_tests.root_module.addAnonymousImport("start_page_asset", .{
+        .root_source_file = b.path("assets/start_page/start_page.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     if (target.result.os.tag == .macos) {
         browser_tests.root_module.linkSystemLibrary("c", .{});
         browser_tests.root_module.linkSystemLibrary("objc", .{});

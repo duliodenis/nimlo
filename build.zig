@@ -75,8 +75,18 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_tab_tests = b.addRunArtifact(tab_tests);
+    const tab_manager_tests = b.addTest(.{
+        .name = "tab-manager-tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/browser/tab_manager.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_tab_manager_tests = b.addRunArtifact(tab_manager_tests);
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_url_input_tests.step);
     test_step.dependOn(&run_tab_tests.step);
+    test_step.dependOn(&run_tab_manager_tests.step);
 }

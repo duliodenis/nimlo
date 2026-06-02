@@ -35,6 +35,9 @@ const address_field_margin: CGFloat = 12;
 const nav_button_size: CGFloat = 28;
 const nav_button_gap: CGFloat = 8;
 
+const NSButtonTypeMomentaryChange: usize = 5;
+const NSImageSymbolScaleMedium: isize = 2;
+
 const NSViewMinYMargin: usize = 1 << 3;
 const NSViewWidthSizable: usize = 1 << 1;
 const NSViewTopPinned = NSViewMinYMargin;
@@ -76,11 +79,11 @@ fn addToolbar(content_view: Id, bounds: CGRect, webview: Id) !Id {
     const button_y = toolbarControlY(bounds, nav_button_size);
     var button_x = address_field_margin;
 
-    try addToolbarButton(content_view, target, "<", "Back", "goBack:", button_x, button_y);
+    try addToolbarButton(content_view, target, "chevron.left", "Back", "goBack:", button_x, button_y);
     button_x += nav_button_size + nav_button_gap;
-    try addToolbarButton(content_view, target, ">", "Forward", "goForward:", button_x, button_y);
+    try addToolbarButton(content_view, target, "chevron.right", "Forward", "goForward:", button_x, button_y);
     button_x += nav_button_size + nav_button_gap;
-    try addToolbarButton(content_view, target, "R", "Reload", "reload:", button_x, button_y);
+    try addToolbarButton(content_view, target, "arrow.clockwise", "Reload", "reload:", button_x, button_y);
 
     const address_x = button_x + nav_button_size + nav_button_gap;
     const address_frame = CGRect{
@@ -119,7 +122,7 @@ fn addToolbar(content_view: Id, bounds: CGRect, webview: Id) !Id {
 fn addToolbarButton(
     content_view: Id,
     target: Id,
-    title: [:0]const u8,
+    symbol_name: [:0]const u8,
     tooltip: [:0]const u8,
     action: [:0]const u8,
     x: CGFloat,
@@ -137,12 +140,59 @@ fn addToolbarButton(
     );
     if (button == null) return error.MacOSToolbarButtonUnavailable;
 
+    const symbol = systemSymbol(symbol_name, tooltip);
+    const image = if (symbol) |value| value else fallbackSymbolImage(symbol_name);
+    if (image != null) {
+        msg1(void, button, sel("setImage:"), image);
+    } else {
+        msg1(void, button, sel("setTitle:"), nsString(fallbackButtonTitle(symbol_name)));
+    }
+
     msg1(void, button, sel("setAutoresizingMask:"), NSViewTopPinned);
-    msg1(void, button, sel("setTitle:"), nsString(title));
+    msg1(void, button, sel("setTitle:"), nsString(""));
+    msg1(void, button, sel("setBordered:"), false);
+    msg1(void, button, sel("setButtonType:"), NSButtonTypeMomentaryChange);
     msg1(void, button, sel("setToolTip:"), nsString(tooltip));
     msg1(void, button, sel("setTarget:"), target);
     msg1(void, button, sel("setAction:"), sel(action));
     msg1(void, content_view, sel("addSubview:"), button);
+}
+
+fn systemSymbol(symbol_name: [:0]const u8, accessibility_description: [:0]const u8) Id {
+    const image = msg2(
+        Id,
+        cls("NSImage"),
+        sel("imageWithSystemSymbolName:accessibilityDescription:"),
+        nsString(symbol_name),
+        nsString(accessibility_description),
+    );
+    if (image == null) return null;
+
+    const config = msg1(
+        Id,
+        cls("NSImageSymbolConfiguration"),
+        sel("configurationWithScale:"),
+        NSImageSymbolScaleMedium,
+    );
+    if (config == null) return image;
+
+    return msg1(Id, image, sel("imageWithSymbolConfiguration:"), config);
+}
+
+fn fallbackSymbolImage(symbol_name: [:0]const u8) Id {
+    if (std.mem.eql(u8, symbol_name, "chevron.left")) return msg1(Id, cls("NSImage"), sel("imageNamed:"), nsString("NSGoLeftTemplate"));
+    if (std.mem.eql(u8, symbol_name, "chevron.right")) return msg1(Id, cls("NSImage"), sel("imageNamed:"), nsString("NSGoRightTemplate"));
+    if (std.mem.eql(u8, symbol_name, "arrow.clockwise")) return msg1(Id, cls("NSImage"), sel("imageNamed:"), nsString("NSRefreshTemplate"));
+
+    return null;
+}
+
+fn fallbackButtonTitle(symbol_name: [:0]const u8) [:0]const u8 {
+    if (std.mem.eql(u8, symbol_name, "chevron.left")) return "<";
+    if (std.mem.eql(u8, symbol_name, "chevron.right")) return ">";
+    if (std.mem.eql(u8, symbol_name, "arrow.clockwise")) return "R";
+
+    return "?";
 }
 
 fn toolbarControlY(bounds: CGRect, height: CGFloat) CGFloat {

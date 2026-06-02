@@ -48,6 +48,7 @@ const NSImageScaleProportionallyDown: isize = 1;
 const NSImageSymbolScaleMedium: isize = 2;
 const NSLayoutAttributeLeft: isize = 1;
 const NSTextAlignmentCenter: isize = 1;
+const NSUTF8StringEncoding: usize = 4;
 
 const NSViewMinYMargin: usize = 1 << 3;
 const NSViewWidthSizable: usize = 1 << 1;
@@ -564,7 +565,7 @@ fn updateFaviconFromWebView(webview: Id) void {
         return;
     }
 
-    const favicon_url = rootFaviconUrl(webview) orelse {
+    const favicon_url = declaredFaviconUrl(webview) orelse rootFaviconUrl(webview) orelse {
         setCurrentTabIcon(defaultFavicon());
         return;
     };
@@ -576,6 +577,29 @@ fn updateFaviconFromWebView(webview: Id) void {
 
     const image = msg1(Id, msg0(Id, cls("NSImage"), sel("alloc")), sel("initWithContentsOfURL:"), ns_url);
     setCurrentTabIcon(if (image) |value| value else defaultFavicon());
+}
+
+fn declaredFaviconUrl(webview: Id) ?[:0]const u8 {
+    const page_url = webViewUrl(webview) orelse return null;
+    const page_url_z = std.heap.page_allocator.dupeZ(u8, page_url) catch return null;
+    const ns_url = msg1(Id, cls("NSURL"), sel("URLWithString:"), nsString(page_url_z));
+    if (ns_url == null) return null;
+
+    const data = msg1(Id, cls("NSData"), sel("dataWithContentsOfURL:"), ns_url);
+    if (data == null) return null;
+
+    const html_value = msg2(
+        Id,
+        msg0(Id, cls("NSString"), sel("alloc")),
+        sel("initWithData:encoding:"),
+        data,
+        NSUTF8StringEncoding,
+    );
+    if (html_value == null) return null;
+
+    const raw_html = msg0(?[*:0]const u8, html_value, sel("UTF8String")) orelse return null;
+    const href = findDeclaredIconHref(std.mem.span(raw_html)) orelse return null;
+    return resolveFaviconUrl(page_url, href);
 }
 
 fn rootFaviconUrl(webview: Id) ?[:0]const u8 {
@@ -596,6 +620,137 @@ fn rootFaviconUrl(webview: Id) ?[:0]const u8 {
 
 fn defaultFavicon() Id {
     return systemSymbol("globe", "Website");
+}
+
+fn findDeclaredIconHref(html: []const u8) ?[]const u8 {
+    var offset: usize = 0;
+    while (indexOfIgnoreCase(html[offset..], "<link")) |relative_start| {
+        const tag_start = offset + relative_start;
+        const tag_end = std.mem.indexOfScalarPos(u8, html, tag_start, '>') orelse return null;
+        const tag = html[tag_start .. tag_end + 1];
+
+        const rel = attributeValue(tag, "rel");
+        const href = attributeValue(tag, "href");
+        if (rel != null and href != null and isIconRel(rel.?)) return href.?;
+
+        offset = tag_end + 1;
+    }
+
+    return null;
+}
+
+fn attributeValue(tag: []const u8, wanted_name: []const u8) ?[]const u8 {
+    var i: usize = 0;
+    while (i < tag.len) {
+        while (i < tag.len and !isAttributeNameByte(tag[i])) : (i += 1) {}
+        const name_start = i;
+        while (i < tag.len and isAttributeNameByte(tag[i])) : (i += 1) {}
+        if (name_start == i) break;
+
+        const name = tag[name_start..i];
+        while (i < tag.len and std.ascii.isWhitespace(tag[i])) : (i += 1) {}
+        if (i >= tag.len or tag[i] != '=') continue;
+        i += 1;
+        while (i < tag.len and std.ascii.isWhitespace(tag[i])) : (i += 1) {}
+        if (i >= tag.len) return null;
+
+        const quote = tag[i];
+        if (quote == '"' or quote == '\'') {
+            i += 1;
+            const value_start = i;
+            while (i < tag.len and tag[i] != quote) : (i += 1) {}
+            const value = tag[value_start..i];
+            if (asciiEqlIgnoreCase(name, wanted_name)) return value;
+        } else {
+            const value_start = i;
+            while (i < tag.len and !std.ascii.isWhitespace(tag[i]) and tag[i] != '>') : (i += 1) {}
+            const value = tag[value_start..i];
+            if (asciiEqlIgnoreCase(name, wanted_name)) return value;
+        }
+    }
+
+    return null;
+}
+
+fn resolveFaviconUrl(page_url: []const u8, href: []const u8) ?[:0]const u8 {
+    if (std.mem.startsWith(u8, href, "http://") or std.mem.startsWith(u8, href, "https://")) {
+        return std.heap.page_allocator.dupeZ(u8, href) catch null;
+    }
+
+    const scheme_end = std.mem.indexOf(u8, page_url, "://") orelse return null;
+    const scheme = page_url[0..scheme_end];
+    const authority_start = scheme_end + 3;
+    const path_start = std.mem.indexOfScalarPos(u8, page_url, authority_start, '/') orelse page_url.len;
+    const origin = page_url[0..path_start];
+
+    if (std.mem.startsWith(u8, href, "//")) {
+        const text = std.fmt.allocPrint(std.heap.page_allocator, "{s}:{s}", .{ scheme, href }) catch return null;
+        return std.heap.page_allocator.dupeZ(u8, text) catch null;
+    }
+
+    if (std.mem.startsWith(u8, href, "/")) {
+        const text = std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}", .{ origin, href }) catch return null;
+        return std.heap.page_allocator.dupeZ(u8, text) catch null;
+    }
+
+    const directory_end = std.mem.lastIndexOfScalar(u8, page_url[0..path_start], '/') orelse path_start;
+    const text = if (directory_end > authority_start)
+        std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}", .{ page_url[0 .. directory_end + 1], href }) catch return null
+    else
+        std.fmt.allocPrint(std.heap.page_allocator, "{s}/{s}", .{ origin, href }) catch return null;
+    return std.heap.page_allocator.dupeZ(u8, text) catch null;
+}
+
+fn isIconRel(rel: []const u8) bool {
+    var parts = std.mem.tokenizeAny(u8, rel, " \t\r\n");
+    while (parts.next()) |part| {
+        if (asciiEqlIgnoreCase(part, "icon") or asciiEqlIgnoreCase(part, "shortcut icon") or asciiEqlIgnoreCase(part, "apple-touch-icon")) return true;
+    }
+    return false;
+}
+
+fn indexOfIgnoreCase(haystack: []const u8, needle: []const u8) ?usize {
+    if (needle.len == 0 or needle.len > haystack.len) return null;
+
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        if (asciiEqlIgnoreCase(haystack[i .. i + needle.len], needle)) return i;
+    }
+    return null;
+}
+
+fn asciiEqlIgnoreCase(left: []const u8, right: []const u8) bool {
+    if (left.len != right.len) return false;
+    for (left, right) |left_byte, right_byte| {
+        if (std.ascii.toLower(left_byte) != std.ascii.toLower(right_byte)) return false;
+    }
+    return true;
+}
+
+fn isAttributeNameByte(byte: u8) bool {
+    return std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '_' or byte == ':';
+}
+
+test "findDeclaredIconHref finds icon link href" {
+    const html =
+        \\<html><head>
+        \\<link rel="stylesheet" href="/site.css">
+        \\<link href="/icons/favicon.svg" rel="shortcut icon">
+        \\</head></html>
+    ;
+
+    try std.testing.expectEqualStrings("/icons/favicon.svg", findDeclaredIconHref(html).?);
+}
+
+test "resolveFaviconUrl handles absolute and root-relative hrefs" {
+    try std.testing.expectEqualStrings(
+        "https://static.example.test/icon.svg",
+        (resolveFaviconUrl("https://www.example.test/path/page.html", "//static.example.test/icon.svg") orelse return error.MissingResolvedUrl),
+    );
+    try std.testing.expectEqualStrings(
+        "https://www.example.test/favicon.ico",
+        (resolveFaviconUrl("https://www.example.test/path/page.html", "/favicon.ico") orelse return error.MissingResolvedUrl),
+    );
 }
 
 fn emitNavigationFromWebView(webview: Id, loading_state: webview_events.LoadingState) void {

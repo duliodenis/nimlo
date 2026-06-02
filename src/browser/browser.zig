@@ -40,6 +40,7 @@ pub const Browser = struct {
         self.webview_adapter.setEventSink(.{
             .context = self,
             .on_navigation = handleNavigationEvent,
+            .on_new_tab_requested = handleNewTabRequested,
         });
     }
 
@@ -54,14 +55,24 @@ pub const Browser = struct {
 
         const url = self.allocator.dupe(u8, event.url) catch return;
         const title = self.allocator.dupe(u8, event.title) catch "";
+        const favicon_url = self.allocator.dupe(u8, event.favicon_url) catch "";
 
         active_tab.updateNavigation(.{
             .current_url = url,
             .title = title,
+            .favicon_url = favicon_url,
             .loading_state = mapLoadingState(event.loading_state),
             .can_go_back = event.can_go_back,
             .can_go_forward = event.can_go_forward,
         });
+    }
+
+    fn handleNewTabRequested(context: *anyopaque) void {
+        const self: *Browser = @ptrCast(@alignCast(context));
+        _ = self.tabs.createTab(
+            self.preferences.homepage_url,
+            self.private_mode.enabled,
+        ) catch return;
     }
 
     fn mapLoadingState(state: webview_events.LoadingState) tab_model.LoadingState {
@@ -103,6 +114,7 @@ test "navigation event updates active tab state" {
     webview_events.emitNavigation(.{
         .url = "https://example.com/docs",
         .title = "Example Docs",
+        .favicon_url = "https://example.com/favicon.ico",
         .loading_state = .idle,
         .can_go_back = true,
         .can_go_forward = false,
@@ -111,6 +123,7 @@ test "navigation event updates active tab state" {
     const active_tab = browser.tabs.activeTab().?;
     try std.testing.expectEqualStrings("https://example.com/docs", active_tab.current_url);
     try std.testing.expectEqualStrings("Example Docs", active_tab.title);
+    try std.testing.expectEqualStrings("https://example.com/favicon.ico", active_tab.favicon_url);
     try std.testing.expectEqual(tab_model.LoadingState.idle, active_tab.loading_state);
     try std.testing.expect(active_tab.can_go_back);
     try std.testing.expect(!active_tab.can_go_forward);
@@ -161,4 +174,22 @@ test "start does not create duplicate startup tabs" {
     try browser.start();
 
     try std.testing.expectEqual(@as(usize, 1), browser.tabs.len());
+}
+
+test "new tab command creates and activates startup tab" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.start();
+    webview_events.emitNewTabRequested();
+
+    try std.testing.expectEqual(@as(usize, 2), browser.tabs.len());
+    const active_tab = browser.tabs.activeTab().?;
+    try std.testing.expectEqualStrings("nimlo://start", active_tab.current_url);
+    try std.testing.expectEqualStrings("Nimlo", active_tab.title);
 }

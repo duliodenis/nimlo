@@ -11,6 +11,7 @@ pub const LoadingState = enum {
 pub const NavigationState = struct {
     current_url: []const u8,
     title: []const u8 = "",
+    favicon_url: []const u8 = "",
     loading_state: LoadingState = .idle,
     can_go_back: bool = false,
     can_go_forward: bool = false,
@@ -20,6 +21,7 @@ pub const Tab = struct {
     id: TabId,
     title: []const u8,
     current_url: []const u8,
+    favicon_url: []const u8,
     loading_state: LoadingState,
     can_go_back: bool,
     can_go_forward: bool,
@@ -31,6 +33,7 @@ pub const Tab = struct {
             .id = id,
             .title = "Nimlo",
             .current_url = start_url,
+            .favicon_url = "",
             .loading_state = .idle,
             .can_go_back = false,
             .can_go_forward = false,
@@ -42,6 +45,7 @@ pub const Tab = struct {
     pub fn updateNavigation(self: *Tab, state: NavigationState) void {
         self.current_url = state.current_url;
         self.title = if (state.title.len == 0) "Nimlo" else state.title;
+        self.favicon_url = state.favicon_url;
         self.loading_state = state.loading_state;
         self.can_go_back = state.can_go_back;
         self.can_go_forward = state.can_go_forward;
@@ -70,6 +74,7 @@ test "default tab state" {
     try std.testing.expectEqual(@as(TabId, 1), tab.id);
     try std.testing.expectEqualStrings("Nimlo", tab.title);
     try std.testing.expectEqualStrings("nimlo://start", tab.current_url);
+    try std.testing.expectEqualStrings("", tab.favicon_url);
     try std.testing.expectEqual(LoadingState.idle, tab.loading_state);
     try std.testing.expect(!tab.can_go_back);
     try std.testing.expect(!tab.can_go_forward);
@@ -89,6 +94,7 @@ test "navigation state update" {
     tab.updateNavigation(.{
         .current_url = "https://example.com/docs",
         .title = "Example Docs",
+        .favicon_url = "https://example.com/favicon.ico",
         .loading_state = .loading,
         .can_go_back = true,
         .can_go_forward = false,
@@ -96,6 +102,7 @@ test "navigation state update" {
 
     try std.testing.expectEqualStrings("https://example.com/docs", tab.current_url);
     try std.testing.expectEqualStrings("Example Docs", tab.title);
+    try std.testing.expectEqualStrings("https://example.com/favicon.ico", tab.favicon_url);
     try std.testing.expectEqual(LoadingState.loading, tab.loading_state);
     try std.testing.expect(tab.can_go_back);
     try std.testing.expect(!tab.can_go_forward);

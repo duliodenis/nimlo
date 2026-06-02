@@ -42,6 +42,8 @@ const tab_height: CGFloat = 28;
 const tab_icon_size: CGFloat = 16;
 const tab_margin: CGFloat = 12;
 const tab_label_x: CGFloat = 28;
+const titlebar_new_tab_button_size: CGFloat = 28;
+const titlebar_new_tab_button_gap: CGFloat = 4;
 
 const NSButtonTypeMomentaryChange: usize = 5;
 const NSImageScaleProportionallyDown: isize = 1;
@@ -100,7 +102,7 @@ fn addToolbar(content_view: Id, bounds: CGRect, webview: Id) !Id {
     _ = msg0(Id, target, sel("retain"));
     _ = c.object_setInstanceVariable(@ptrCast(@alignCast(target.?)), "webView", webview);
 
-    try addTitlebarTabStrip(current_window orelse return error.MacOSWindowUnavailable);
+    try addTitlebarTabStrip(current_window orelse return error.MacOSWindowUnavailable, target);
 
     const button_y = toolbarControlY(bounds, nav_button_size);
     var button_x = address_field_margin;
@@ -145,13 +147,16 @@ fn addToolbar(content_view: Id, bounds: CGRect, webview: Id) !Id {
     return text_field;
 }
 
-fn addTitlebarTabStrip(window_handle: Id) !void {
+fn addTitlebarTabStrip(window_handle: Id, target: Id) !void {
     const container_frame = CGRect{
         .origin = .{
             .x = 0,
             .y = 0,
         },
-        .size = .{ .width = tab_width + tab_margin, .height = tab_strip_height },
+        .size = .{
+            .width = tab_width + titlebar_new_tab_button_gap + titlebar_new_tab_button_size + tab_margin,
+            .height = tab_strip_height,
+        },
     };
     const container = msg1(
         Id,
@@ -207,12 +212,48 @@ fn addTitlebarTabStrip(window_handle: Id) !void {
     msg1(void, label, sel("setFont:"), msg1(Id, cls("NSFont"), sel("systemFontOfSize:"), @as(CGFloat, 13)));
     msg1(void, container, sel("addSubview:"), label);
 
+    _ = try addTitlebarNewTabButton(container, target);
+
     const controller = msg0(Id, msg0(Id, cls("NSTitlebarAccessoryViewController"), sel("alloc")), sel("init"));
     if (controller == null) return error.MacOSTitlebarAccessoryUnavailable;
 
     msg1(void, controller, sel("setView:"), container);
     msg1(void, controller, sel("setLayoutAttribute:"), NSLayoutAttributeLeft);
     msg1(void, window_handle, sel("addTitlebarAccessoryViewController:"), controller);
+}
+
+fn addTitlebarNewTabButton(container: Id, target: Id) !Id {
+    const frame = CGRect{
+        .origin = .{
+            .x = tab_width + titlebar_new_tab_button_gap,
+            .y = (tab_strip_height - titlebar_new_tab_button_size) / 2,
+        },
+        .size = .{ .width = titlebar_new_tab_button_size, .height = titlebar_new_tab_button_size },
+    };
+    const button = msg1(
+        Id,
+        msg0(Id, cls("NSButton"), sel("alloc")),
+        sel("initWithFrame:"),
+        frame,
+    );
+    if (button == null) return error.MacOSTitlebarButtonUnavailable;
+
+    const symbol = systemSymbol("plus", "New Tab");
+    if (symbol != null) {
+        msg1(void, button, sel("setImage:"), symbol);
+        msg1(void, button, sel("setTitle:"), nsString(""));
+    } else {
+        msg1(void, button, sel("setTitle:"), nsString("+"));
+    }
+
+    msg1(void, button, sel("setAutoresizingMask:"), NSViewTopPinned);
+    msg1(void, button, sel("setBordered:"), false);
+    msg1(void, button, sel("setButtonType:"), NSButtonTypeMomentaryChange);
+    msg1(void, button, sel("setToolTip:"), nsString("New Tab"));
+    msg1(void, button, sel("setTarget:"), target);
+    msg1(void, button, sel("setAction:"), sel("newTab:"));
+    msg1(void, container, sel("addSubview:"), button);
+    return button;
 }
 
 fn addToolbarButton(
@@ -333,6 +374,12 @@ fn installAddressBarTargetClass() void {
     );
     _ = c.class_addMethod(
         target_class,
+        c.sel_registerName("newTab:"),
+        @ptrCast(&newTab),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
         c.sel_registerName("webView:didStartProvisionalNavigation:"),
         @ptrCast(&navigationStarted),
         "v@:@@",
@@ -417,6 +464,13 @@ fn goForward(target: Id, _: Sel, _: Id) callconv(.c) void {
     }
 }
 
+fn newTab(target: Id, _: Sel, _: Id) callconv(.c) void {
+    const webview = getIvar(target, "webView") orelse return;
+    webview_events.emitNewTabRequested();
+    loadInternalStartPage(webview) catch return;
+    std.debug.print("new tab requested.\n", .{});
+}
+
 fn reload(target: Id, _: Sel, _: Id) callconv(.c) void {
     const webview = getIvar(target, "webView") orelse return;
 
@@ -451,13 +505,13 @@ fn navigationStarted(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
     _ = target;
     setLoadingState(true);
     updateAddressFromWebView(webview);
-    emitNavigationFromWebView(webview, .loading);
+    emitNavigationFromWebView(webview, .loading, null);
 }
 
 fn navigationChanged(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
     _ = target;
     updateAddressFromWebView(webview);
-    emitNavigationFromWebView(webview, if (current_page_is_loading) .loading else .idle);
+    emitNavigationFromWebView(webview, if (current_page_is_loading) .loading else .idle, null);
 }
 
 fn navigationFinished(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
@@ -465,15 +519,15 @@ fn navigationFinished(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void 
     setLoadingState(false);
     updateAddressFromWebView(webview);
     updateWindowTitleFromWebView(webview);
-    updateFaviconFromWebView(webview);
-    emitNavigationFromWebView(webview, .idle);
+    const favicon_url = updateFaviconFromWebView(webview);
+    emitNavigationFromWebView(webview, .idle, favicon_url);
 }
 
 fn navigationFailed(target: Id, _: Sel, webview: Id, _: Id, _: Id) callconv(.c) void {
     _ = target;
     setLoadingState(false);
     updateAddressFromWebView(webview);
-    emitNavigationFromWebView(webview, .failed);
+    emitNavigationFromWebView(webview, .failed, null);
 }
 
 fn updateAddressFromWebView(webview: Id) void {
@@ -559,24 +613,25 @@ fn setWindowTitle(title: [:0]const u8) void {
     }
 }
 
-fn updateFaviconFromWebView(webview: Id) void {
+fn updateFaviconFromWebView(webview: Id) ?[:0]const u8 {
     if (current_page_is_internal) {
         setCurrentTabIcon(systemSymbol("sparkles", "Nimlo"));
-        return;
+        return "";
     }
 
     const favicon_url = declaredFaviconUrl(webview) orelse rootFaviconUrl(webview) orelse {
         setCurrentTabIcon(defaultFavicon());
-        return;
+        return null;
     };
     const ns_url = msg1(Id, cls("NSURL"), sel("URLWithString:"), nsString(favicon_url));
     if (ns_url == null) {
         setCurrentTabIcon(defaultFavicon());
-        return;
+        return null;
     }
 
     const image = msg1(Id, msg0(Id, cls("NSImage"), sel("alloc")), sel("initWithContentsOfURL:"), ns_url);
     setCurrentTabIcon(if (image) |value| value else defaultFavicon());
+    return favicon_url;
 }
 
 fn declaredFaviconUrl(webview: Id) ?[:0]const u8 {
@@ -753,7 +808,7 @@ test "resolveFaviconUrl handles absolute and root-relative hrefs" {
     );
 }
 
-fn emitNavigationFromWebView(webview: Id, loading_state: webview_events.LoadingState) void {
+fn emitNavigationFromWebView(webview: Id, loading_state: webview_events.LoadingState, favicon_url: ?[]const u8) void {
     var url_text: []const u8 = "";
     var title_text: []const u8 = "";
 
@@ -775,6 +830,7 @@ fn emitNavigationFromWebView(webview: Id, loading_state: webview_events.LoadingS
     webview_events.emitNavigation(.{
         .url = url_text,
         .title = title_text,
+        .favicon_url = favicon_url orelse "",
         .loading_state = loading_state,
         .can_go_back = msg0(bool, webview, sel("canGoBack")),
         .can_go_forward = msg0(bool, webview, sel("canGoForward")),

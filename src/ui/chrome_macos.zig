@@ -41,6 +41,8 @@ const tab_width: CGFloat = 220;
 const min_tab_width: CGFloat = 76;
 const tab_height: CGFloat = 28;
 const tab_icon_size: CGFloat = 16;
+const tab_close_button_size: CGFloat = 20;
+const tab_close_button_margin: CGFloat = 4;
 const tab_margin: CGFloat = 12;
 const tab_label_x: CGFloat = 28;
 const inactive_tab_width: CGFloat = 160;
@@ -286,6 +288,7 @@ fn renderTitlebarTabs(tabs: []const webview_events.TabSnapshot) !void {
     for (tabs) |tab| {
         const width = tab_slot_width;
         const button = try addTitlebarTabButton(document_view, target, tab, x, width);
+        _ = try addTitlebarTabCloseButton(document_view, target, tab, x, width);
         if (tab.is_active) {
             active_button = button;
         }
@@ -343,6 +346,47 @@ fn addTitlebarTabButton(container: Id, target: Id, tab: webview_events.TabSnapsh
     msg1(void, button, sel("setTag:"), @as(isize, @intCast(tab.id)));
     msg1(void, button, sel("setTarget:"), target);
     msg1(void, button, sel("setAction:"), sel("activateTab:"));
+    msg1(void, container, sel("addSubview:"), button);
+    return button;
+}
+
+fn addTitlebarTabCloseButton(
+    container: Id,
+    target: Id,
+    tab: webview_events.TabSnapshot,
+    x: CGFloat,
+    width: CGFloat,
+) !Id {
+    const frame = CGRect{
+        .origin = .{
+            .x = x + width - tab_close_button_size - tab_close_button_margin,
+            .y = (tab_strip_height - tab_close_button_size) / 2,
+        },
+        .size = .{ .width = tab_close_button_size, .height = tab_close_button_size },
+    };
+    const button = msg1(
+        Id,
+        msg0(Id, cls("NSButton"), sel("alloc")),
+        sel("initWithFrame:"),
+        frame,
+    );
+    if (button == null) return error.MacOSTabCloseButtonUnavailable;
+
+    const symbol = systemSymbol("xmark", "Close Tab");
+    if (symbol != null) {
+        msg1(void, button, sel("setImage:"), symbol);
+        msg1(void, button, sel("setTitle:"), nsString(""));
+    } else {
+        msg1(void, button, sel("setTitle:"), nsString("x"));
+    }
+
+    msg1(void, button, sel("setAutoresizingMask:"), NSViewTopPinned);
+    msg1(void, button, sel("setBordered:"), false);
+    msg1(void, button, sel("setButtonType:"), NSButtonTypeMomentaryChange);
+    msg1(void, button, sel("setToolTip:"), nsString("Close Tab"));
+    msg1(void, button, sel("setTag:"), @as(isize, @intCast(tab.id)));
+    msg1(void, button, sel("setTarget:"), target);
+    msg1(void, button, sel("setAction:"), sel("closeTab:"));
     msg1(void, container, sel("addSubview:"), button);
     return button;
 }
@@ -637,6 +681,12 @@ fn installAddressBarTargetClass() void {
     );
     _ = c.class_addMethod(
         target_class,
+        c.sel_registerName("closeTab:"),
+        @ptrCast(&closeTab),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
         c.sel_registerName("windowDidResize:"),
         @ptrCast(&windowDidResize),
         "v@:@",
@@ -759,6 +809,13 @@ fn activateTab(_: Id, _: Sel, sender: Id) callconv(.c) void {
     if (tab_id <= 0) return;
 
     webview_events.emitTabActivatedRequested(@intCast(tab_id));
+}
+
+fn closeTab(_: Id, _: Sel, sender: Id) callconv(.c) void {
+    const tab_id = msg0(isize, sender, sel("tag"));
+    if (tab_id <= 0) return;
+
+    webview_events.emitTabClosedRequested(@intCast(tab_id));
 }
 
 fn windowDidResize(_: Id, _: Sel, _: Id) callconv(.c) void {

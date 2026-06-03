@@ -44,7 +44,7 @@ pub const Tab = struct {
 
     pub fn updateNavigation(self: *Tab, state: NavigationState) void {
         self.current_url = state.current_url;
-        self.title = if (state.title.len == 0) "Nimlo" else state.title;
+        self.title = if (state.title.len == 0) fallbackTitle(state.current_url) else state.title;
         self.favicon_url = state.favicon_url;
         self.loading_state = state.loading_state;
         self.can_go_back = state.can_go_back;
@@ -67,6 +67,17 @@ pub const Tab = struct {
         self.webview_handle = handle;
     }
 };
+
+fn fallbackTitle(url: []const u8) []const u8 {
+    if (std.mem.eql(u8, url, "nimlo://start")) return "Nimlo";
+
+    const scheme_end = std.mem.indexOf(u8, url, "://") orelse return url;
+    const host_start = scheme_end + 3;
+    const host_end = std.mem.indexOfAnyPos(u8, url, host_start, "/?#") orelse url.len;
+    if (host_start >= host_end) return url;
+
+    return url[host_start..host_end];
+}
 
 test "default tab state" {
     const tab = Tab.init(1, "nimlo://start", false);
@@ -108,15 +119,26 @@ test "navigation state update" {
     try std.testing.expect(!tab.can_go_forward);
 }
 
-test "empty page title falls back to Nimlo" {
+test "empty start page title falls back to Nimlo" {
     var tab = Tab.init(4, "nimlo://start", false);
 
     tab.updateNavigation(.{
-        .current_url = "https://example.com",
+        .current_url = "nimlo://start",
         .title = "",
     });
 
     try std.testing.expectEqualStrings("Nimlo", tab.title);
+}
+
+test "empty external page title falls back to URL host" {
+    var tab = Tab.init(6, "nimlo://start", false);
+
+    tab.updateNavigation(.{
+        .current_url = "https://www.cnn.com/",
+        .title = "",
+    });
+
+    try std.testing.expectEqualStrings("www.cnn.com", tab.title);
 }
 
 test "loading helpers update state" {

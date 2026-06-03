@@ -55,13 +55,16 @@ pub const Browser = struct {
 
     fn handleNavigationEvent(context: *anyopaque, event: webview_events.NavigationEvent) void {
         const self: *Browser = @ptrCast(@alignCast(context));
-        const active_tab = self.tabs.activeTab() orelse return;
+        const tab = self.tabs.findTabByWebView(event.source_handle) orelse self.tabs.activeTab() orelse return;
 
         const url = self.allocator.dupe(u8, event.url) catch return;
         const title = self.allocator.dupe(u8, event.title) catch "";
         const favicon_url = self.allocator.dupe(u8, event.favicon_url) catch "";
+        if (tab.webview_handle == null) {
+            tab.attachWebView(event.source_handle orelse self.webview_adapter.activeHandle());
+        }
 
-        active_tab.updateNavigation(.{
+        tab.updateNavigation(.{
             .current_url = url,
             .title = title,
             .favicon_url = favicon_url,
@@ -78,6 +81,11 @@ pub const Browser = struct {
             self.preferences.homepage_url,
             self.private_mode.enabled,
         ) catch return;
+        const active_tab = self.tabs.activeTab() orelse return;
+        const handle = self.webview_adapter.createWebView() catch return;
+        active_tab.attachWebView(handle);
+        self.webview_adapter.showWebView(handle);
+        self.loadTab(active_tab.*) catch return;
         self.publishTabsChanged();
     }
 
@@ -86,7 +94,14 @@ pub const Browser = struct {
         if (!self.tabs.activateTab(tab_id)) return;
         const active_tab = self.tabs.activeTab() orelse return;
 
-        self.loadTab(active_tab.*) catch return;
+        if (active_tab.webview_handle) |handle| {
+            self.webview_adapter.showWebView(handle);
+        } else {
+            const handle = self.webview_adapter.createWebView() catch return;
+            active_tab.attachWebView(handle);
+            self.webview_adapter.showWebView(handle);
+            self.loadTab(active_tab.*) catch return;
+        }
         self.publishTabsChanged();
     }
 
@@ -250,4 +265,32 @@ test "tab activation command switches active tab" {
     webview_events.emitTabActivatedRequested(first);
 
     try std.testing.expectEqual(first, browser.tabs.active_tab_id.?);
+}
+
+test "navigation event updates tab matching source WebView handle" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.start();
+    const first = browser.tabs.activeTab().?;
+    first.attachWebView(@ptrFromInt(0x1));
+    _ = try browser.tabs.createTab("https://example.com", false);
+    const second = browser.tabs.activeTab().?;
+    second.attachWebView(@ptrFromInt(0x2));
+
+    webview_events.emitNavigation(.{
+        .source_handle = @ptrFromInt(0x1),
+        .url = "https://cnn.example",
+        .title = "CNN",
+        .loading_state = .idle,
+    });
+
+    try std.testing.expectEqualStrings("CNN", browser.tabs.findTab(1).?.title);
+    try std.testing.expectEqualStrings("Nimlo", browser.tabs.findTab(2).?.title);
+    try std.testing.expectEqual(@as(tab_model.TabId, 2), browser.tabs.active_tab_id.?);
 }

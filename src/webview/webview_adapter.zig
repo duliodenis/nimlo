@@ -24,6 +24,18 @@ pub const WebViewAdapter = struct {
         try self.platform.loadHtml(html, base_url);
     }
 
+    pub fn createWebView(self: *WebViewAdapter) !?*anyopaque {
+        return try self.platform.createWebView();
+    }
+
+    pub fn showWebView(self: *WebViewAdapter, handle: ?*anyopaque) void {
+        self.platform.showWebView(handle);
+    }
+
+    pub fn activeHandle(self: *WebViewAdapter) ?*anyopaque {
+        return self.platform.activeHandle();
+    }
+
     pub fn setEventSink(self: *WebViewAdapter, sink: EventSink) void {
         _ = self;
         webview_events.setSink(sink);

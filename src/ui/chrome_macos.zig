@@ -77,6 +77,7 @@ var current_tab_document_view: Id = null;
 var current_tab_new_button: Id = null;
 var current_tab_scroll_view: Id = null;
 var current_tab_target: Id = null;
+var current_webview_target: Id = null;
 var current_window: Id = null;
 var current_page_is_loading = false;
 var current_tab_snapshots: std.ArrayList(webview_events.TabSnapshot) = .empty;
@@ -94,13 +95,14 @@ pub fn noteExternalLoad() void {
     setCurrentTabIcon(defaultFavicon());
 }
 
-pub fn noteInternalLoad() void {
+pub fn noteInternalLoad(webview: Id) void {
     current_page_is_internal = true;
     setCurrentAddress("nimlo://start");
     setCurrentTabIcon(systemSymbol("sparkles", "Nimlo"));
     setCurrentTabTitle("Nimlo");
     setWindowTitle("Nimlo");
     webview_events.emitNavigation(.{
+        .source_handle = webview,
         .url = "nimlo://start",
         .title = "Nimlo",
         .loading_state = .idle,
@@ -113,6 +115,7 @@ fn addToolbar(content_view: Id, bounds: CGRect, webview: Id) !Id {
 
     _ = msg0(Id, target, sel("retain"));
     _ = c.object_setInstanceVariable(@ptrCast(@alignCast(target.?)), "webView", webview);
+    current_webview_target = target;
 
     try addTitlebarTabStrip(current_window orelse return error.MacOSWindowUnavailable, target);
 
@@ -154,9 +157,25 @@ fn addToolbar(content_view: Id, bounds: CGRect, webview: Id) !Id {
     msg1(void, text_field, sel("setTarget:"), target);
     msg1(void, text_field, sel("setAction:"), sel("addressSubmitted:"));
     msg1(void, content_view, sel("addSubview:"), text_field);
-    msg1(void, webview, sel("setNavigationDelegate:"), target);
+    configureWebView(webview);
 
     return text_field;
+}
+
+pub fn configureWebView(webview: Id) void {
+    if (current_webview_target) |target| {
+        msg1(void, webview, sel("setNavigationDelegate:"), target);
+    }
+}
+
+pub fn setActiveWebView(webview: Id) void {
+    if (current_webview_target) |target| {
+        _ = c.object_setInstanceVariable(@ptrCast(@alignCast(target)), "webView", webview);
+    }
+    updateAddressFromWebView(webview);
+    updateWindowTitleFromWebView(webview);
+    _ = updateFaviconFromWebView(webview);
+    setLoadingState(false);
 }
 
 fn addTitlebarTabStrip(window_handle: Id, target: Id) !void {
@@ -706,9 +725,8 @@ fn goForward(target: Id, _: Sel, _: Id) callconv(.c) void {
 }
 
 fn newTab(target: Id, _: Sel, _: Id) callconv(.c) void {
-    const webview = getIvar(target, "webView") orelse return;
+    _ = target;
     webview_events.emitNewTabRequested();
-    loadInternalStartPage(webview) catch return;
     std.debug.print("new tab requested.\n", .{});
 }
 
@@ -750,13 +768,14 @@ fn loadInternalStartPage(webview: Id) !void {
         nsString(html_z),
         @as(Id, null),
     );
-    noteInternalLoad();
+    noteInternalLoad(webview);
 }
 
 fn navigationStarted(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
     _ = target;
     setLoadingState(true);
     updateAddressFromWebView(webview);
+    updateWindowTitleFromWebView(webview);
     emitNavigationFromWebView(webview, .loading, null);
 }
 
@@ -812,20 +831,17 @@ fn updateWindowTitleFromWebView(webview: Id) void {
 
     const title = msg0(Id, webview, sel("title"));
     if (title == null) {
-        setCurrentTabTitle("Nimlo");
-        setWindowTitle("Nimlo");
+        setFallbackWindowTitleFromUrl(webview);
         return;
     }
 
     const raw = msg0(?[*:0]const u8, title, sel("UTF8String")) orelse {
-        setCurrentTabTitle("Nimlo");
-        setWindowTitle("Nimlo");
+        setFallbackWindowTitleFromUrl(webview);
         return;
     };
     const page_title = std.mem.span(raw);
     if (page_title.len == 0) {
-        setCurrentTabTitle("Nimlo");
-        setWindowTitle("Nimlo");
+        setFallbackWindowTitleFromUrl(webview);
         return;
     }
 
@@ -836,6 +852,20 @@ fn updateWindowTitleFromWebView(webview: Id) void {
         std.heap.page_allocator,
         "{s} - Nimlo",
         .{page_title},
+    ) catch return;
+    const full_title = std.heap.page_allocator.dupeZ(u8, title_text) catch return;
+    setWindowTitle(full_title);
+}
+
+fn setFallbackWindowTitleFromUrl(webview: Id) void {
+    const fallback = titleFromWebViewUrl(webview) orelse "Nimlo";
+    const tab_title = std.heap.page_allocator.dupeZ(u8, fallback) catch return;
+    setCurrentTabTitle(tab_title);
+
+    const title_text = std.fmt.allocPrint(
+        std.heap.page_allocator,
+        "{s} - Nimlo",
+        .{fallback},
     ) catch return;
     const full_title = std.heap.page_allocator.dupeZ(u8, title_text) catch return;
     setWindowTitle(full_title);
@@ -1072,14 +1102,13 @@ fn emitNavigationFromWebView(webview: Id, loading_state: webview_events.LoadingS
             url_text = url;
         }
 
-        if (webViewTitle(webview)) |title| {
-            title_text = title;
-        }
+        title_text = webViewTitle(webview) orelse titleFromWebViewUrl(webview) orelse "";
     }
 
     if (url_text.len == 0) return;
 
     webview_events.emitNavigation(.{
+        .source_handle = webview,
         .url = url_text,
         .title = title_text,
         .favicon_url = favicon_url orelse "",
@@ -1105,6 +1134,18 @@ fn webViewTitle(webview: Id) ?[]const u8 {
     const raw = msg0(?[*:0]const u8, title, sel("UTF8String")) orelse return null;
     const text = std.mem.span(raw);
     return if (text.len == 0) null else text;
+}
+
+fn titleFromWebViewUrl(webview: Id) ?[]const u8 {
+    const url = webViewUrl(webview) orelse return null;
+    if (std.mem.eql(u8, url, "nimlo://start")) return "Nimlo";
+
+    const scheme_end = std.mem.indexOf(u8, url, "://") orelse return url;
+    const host_start = scheme_end + 3;
+    const host_end = std.mem.indexOfAnyPos(u8, url, host_start, "/?#") orelse url.len;
+    if (host_start >= host_end) return url;
+
+    return url[host_start..host_end];
 }
 
 fn setLoadingState(is_loading: bool) void {

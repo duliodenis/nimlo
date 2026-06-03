@@ -66,6 +66,16 @@ pub const TabManager = struct {
         return &self.tabs.items[index];
     }
 
+    pub fn findTabByWebView(self: *TabManager, handle: ?*anyopaque) ?*Tab {
+        if (handle == null) return null;
+
+        for (self.tabs.items) |*tab| {
+            if (tab.webview_handle == handle) return tab;
+        }
+
+        return null;
+    }
+
     pub fn len(self: *const TabManager) usize {
         return self.tabs.items.len;
     }

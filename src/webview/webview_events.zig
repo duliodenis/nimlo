@@ -5,6 +5,7 @@ pub const LoadingState = enum {
 };
 
 pub const NavigationEvent = struct {
+    source_handle: ?*anyopaque = null,
     url: []const u8,
     title: []const u8 = "",
     favicon_url: []const u8 = "",

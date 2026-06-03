@@ -22,4 +22,19 @@ pub const StubWebView = struct {
         _ = html;
         _ = base_url;
     }
+
+    pub fn createWebView(self: *StubWebView) !?*anyopaque {
+        _ = self;
+        return null;
+    }
+
+    pub fn showWebView(self: *StubWebView, handle: ?*anyopaque) void {
+        _ = self;
+        _ = handle;
+    }
+
+    pub fn activeHandle(self: *StubWebView) ?*anyopaque {
+        _ = self;
+        return null;
+    }
 };

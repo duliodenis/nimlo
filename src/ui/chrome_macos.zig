@@ -44,7 +44,8 @@ const tab_icon_size: CGFloat = 16;
 const tab_margin: CGFloat = 12;
 const tab_label_x: CGFloat = 28;
 const inactive_tab_width: CGFloat = 160;
-const max_titlebar_tab_strip_width: CGFloat = 900;
+const min_titlebar_tab_strip_width: CGFloat = 320;
+const titlebar_window_margin: CGFloat = 118;
 const titlebar_new_tab_button_size: CGFloat = 28;
 const titlebar_new_tab_button_gap: CGFloat = 4;
 
@@ -72,9 +73,13 @@ var current_reload_button: Id = null;
 var current_tab_icon: Id = null;
 var current_tab_label: Id = null;
 var current_tab_container: Id = null;
+var current_tab_document_view: Id = null;
+var current_tab_new_button: Id = null;
+var current_tab_scroll_view: Id = null;
 var current_tab_target: Id = null;
 var current_window: Id = null;
 var current_page_is_loading = false;
+var current_tab_snapshots: std.ArrayList(webview_events.TabSnapshot) = .empty;
 
 pub fn install(window_handle: Id, content_view: Id, bounds: CGRect, webview: Id) !Id {
     current_window = window_handle;
@@ -161,7 +166,7 @@ fn addTitlebarTabStrip(window_handle: Id, target: Id) !void {
             .y = 0,
         },
         .size = .{
-            .width = max_titlebar_tab_strip_width,
+            .width = titlebarContainerWidth(),
             .height = tab_strip_height,
         },
     };
@@ -175,11 +180,13 @@ fn addTitlebarTabStrip(window_handle: Id, target: Id) !void {
 
     current_tab_container = container;
     current_tab_target = target;
+    try installTitlebarTabScrollView(container);
     try renderTitlebarTabs(&.{});
     webview_events.setChromeSink(.{
         .context = target.?,
         .on_tabs_changed = handleTabsChanged,
     });
+    installWindowResizeObserver(window_handle, target);
 
     const controller = msg0(Id, msg0(Id, cls("NSTitlebarAccessoryViewController"), sel("alloc")), sel("init"));
     if (controller == null) return error.MacOSTitlebarAccessoryUnavailable;
@@ -189,21 +196,74 @@ fn addTitlebarTabStrip(window_handle: Id, target: Id) !void {
     msg1(void, window_handle, sel("addTitlebarAccessoryViewController:"), controller);
 }
 
+fn installWindowResizeObserver(window_handle: Id, target: Id) void {
+    const notification_center = msg0(Id, cls("NSNotificationCenter"), sel("defaultCenter"));
+    if (notification_center == null) return;
+
+    msg4(
+        void,
+        notification_center,
+        sel("addObserver:selector:name:object:"),
+        target,
+        sel("windowDidResize:"),
+        nsString("NSWindowDidResizeNotification"),
+        window_handle,
+    );
+}
+
+fn installTitlebarTabScrollView(container: Id) !void {
+    const scroll_frame = CGRect{
+        .origin = .{ .x = 0, .y = 0 },
+        .size = .{
+            .width = titlebarTabAreaWidth(container),
+            .height = tab_strip_height,
+        },
+    };
+    const scroll_view = msg1(
+        Id,
+        msg0(Id, cls("NSScrollView"), sel("alloc")),
+        sel("initWithFrame:"),
+        scroll_frame,
+    );
+    if (scroll_view == null) return error.MacOSTabScrollViewUnavailable;
+
+    const document_view = msg1(
+        Id,
+        msg0(Id, cls("NSView"), sel("alloc")),
+        sel("initWithFrame:"),
+        scroll_frame,
+    );
+    if (document_view == null) return error.MacOSTabDocumentViewUnavailable;
+
+    msg1(void, scroll_view, sel("setAutoresizingMask:"), NSViewTopPinnedWidth);
+    msg1(void, scroll_view, sel("setBorderType:"), @as(isize, 0));
+    msg1(void, scroll_view, sel("setDrawsBackground:"), false);
+    msg1(void, scroll_view, sel("setHasHorizontalScroller:"), false);
+    msg1(void, scroll_view, sel("setHasVerticalScroller:"), false);
+    msg1(void, scroll_view, sel("setDocumentView:"), document_view);
+    msg1(void, container, sel("addSubview:"), scroll_view);
+
+    current_tab_scroll_view = scroll_view;
+    current_tab_document_view = document_view;
+}
+
 fn renderTitlebarTabs(tabs: []const webview_events.TabSnapshot) !void {
     const container = current_tab_container orelse return;
+    const document_view = current_tab_document_view orelse return;
     const target = current_tab_target orelse return;
 
-    removeAllSubviews(container);
+    updateTitlebarContainerLayout();
+    removeAllSubviews(document_view);
+    removePinnedNewTabButton(container);
 
     var x: CGFloat = 0;
     var active_button: Id = null;
     const tab_count = tabs.len;
-    const tab_area_width = titlebarTabAreaWidth(container);
-    const tab_slot_width = tabWidthForCount(tab_count, tab_area_width);
+    const tab_slot_width = tabWidthForCount(tab_count, titlebarTabAreaWidth(container));
 
     for (tabs) |tab| {
-        const width = if (tab_count <= 2) tab_width else tab_slot_width;
-        const button = try addTitlebarTabButton(container, target, tab, x, width);
+        const width = tab_slot_width;
+        const button = try addTitlebarTabButton(document_view, target, tab, x, width);
         if (tab.is_active) {
             active_button = button;
         }
@@ -217,13 +277,14 @@ fn renderTitlebarTabs(tabs: []const webview_events.TabSnapshot) !void {
             .url = "nimlo://start",
             .is_active = true,
         };
-        active_button = try addTitlebarTabButton(container, target, fallback, x, tab_width);
+        active_button = try addTitlebarTabButton(document_view, target, fallback, x, tab_width);
         x += tab_width + titlebar_new_tab_button_gap;
     }
 
+    resizeTabDocument(document_view, titlebarTabAreaWidth(container));
     current_tab_label = active_button;
     current_tab_icon = active_button;
-    _ = try addTitlebarNewTabButton(container, target, x);
+    _ = try addTitlebarNewTabButton(container, target);
 }
 
 fn addTitlebarTabButton(container: Id, target: Id, tab: webview_events.TabSnapshot, x: CGFloat, width: CGFloat) !Id {
@@ -294,10 +355,10 @@ fn tabDisplayTitle(title: []const u8, width: CGFloat) ![:0]const u8 {
     return try output.toOwnedSliceSentinel(std.heap.page_allocator, 0);
 }
 
-fn addTitlebarNewTabButton(container: Id, target: Id, x: CGFloat) !Id {
+fn addTitlebarNewTabButton(container: Id, target: Id) !Id {
     const frame = CGRect{
         .origin = .{
-            .x = x,
+            .x = titlebarTabAreaWidth(container) + titlebar_new_tab_button_gap,
             .y = (tab_strip_height - titlebar_new_tab_button_size) / 2,
         },
         .size = .{ .width = titlebar_new_tab_button_size, .height = titlebar_new_tab_button_size },
@@ -322,9 +383,11 @@ fn addTitlebarNewTabButton(container: Id, target: Id, x: CGFloat) !Id {
     msg1(void, button, sel("setBordered:"), false);
     msg1(void, button, sel("setButtonType:"), NSButtonTypeMomentaryChange);
     msg1(void, button, sel("setToolTip:"), nsString("New Tab"));
+    msg1(void, button, sel("setTag:"), @as(isize, -1));
     msg1(void, button, sel("setTarget:"), target);
     msg1(void, button, sel("setAction:"), sel("newTab:"));
     msg1(void, container, sel("addSubview:"), button);
+    current_tab_new_button = button;
     return button;
 }
 
@@ -340,10 +403,52 @@ fn tabWidthForCount(tab_count: usize, tab_area_width: CGFloat) CGFloat {
     const count: CGFloat = @floatFromInt(tab_count);
     const total_gaps = if (tab_count > 1) titlebar_new_tab_button_gap * @as(CGFloat, @floatFromInt(tab_count - 1)) else 0;
     const available = @max(min_tab_width, tab_area_width - total_gaps);
-    return std.math.clamp(available / count, min_tab_width, inactive_tab_width);
+    return std.math.clamp(available / count, min_tab_width, tab_width);
+}
+
+fn resizeTabDocument(document_view: Id, content_width: CGFloat) void {
+    msg1(void, document_view, sel("setFrame:"), CGRect{
+        .origin = .{ .x = 0, .y = 0 },
+        .size = .{ .width = content_width, .height = tab_strip_height },
+    });
+}
+
+fn titlebarContainerWidth() CGFloat {
+    if (current_window) |window| {
+        const frame = msg0(CGRect, window, sel("frame"));
+        return @max(min_titlebar_tab_strip_width, frame.size.width - titlebar_window_margin);
+    }
+
+    return min_titlebar_tab_strip_width;
+}
+
+fn updateTitlebarContainerLayout() void {
+    const container = current_tab_container orelse return;
+    const width = titlebarContainerWidth();
+    msg1(void, container, sel("setFrame:"), CGRect{
+        .origin = .{ .x = 0, .y = 0 },
+        .size = .{ .width = width, .height = tab_strip_height },
+    });
+
+    if (current_tab_scroll_view) |scroll_view| {
+        msg1(void, scroll_view, sel("setFrame:"), CGRect{
+            .origin = .{ .x = 0, .y = 0 },
+            .size = .{ .width = titlebarTabAreaWidth(container), .height = tab_strip_height },
+        });
+    }
+}
+
+fn removePinnedNewTabButton(container: Id) void {
+    _ = container;
+    if (current_tab_new_button) |button| {
+        msg0(void, button, sel("removeFromSuperview"));
+        current_tab_new_button = null;
+    }
 }
 
 fn handleTabsChanged(_: *anyopaque, tabs: []const webview_events.TabSnapshot) void {
+    current_tab_snapshots.clearRetainingCapacity();
+    current_tab_snapshots.appendSlice(std.heap.page_allocator, tabs) catch return;
     renderTitlebarTabs(tabs) catch return;
 }
 
@@ -510,6 +615,12 @@ fn installAddressBarTargetClass() void {
     );
     _ = c.class_addMethod(
         target_class,
+        c.sel_registerName("windowDidResize:"),
+        @ptrCast(&windowDidResize),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
         c.sel_registerName("webView:didStartProvisionalNavigation:"),
         @ptrCast(&navigationStarted),
         "v@:@@",
@@ -606,6 +717,10 @@ fn activateTab(_: Id, _: Sel, sender: Id) callconv(.c) void {
     if (tab_id <= 0) return;
 
     webview_events.emitTabActivatedRequested(@intCast(tab_id));
+}
+
+fn windowDidResize(_: Id, _: Sel, _: Id) callconv(.c) void {
+    renderTitlebarTabs(current_tab_snapshots.items) catch return;
 }
 
 fn reload(target: Id, _: Sel, _: Id) callconv(.c) void {
@@ -1052,4 +1167,13 @@ fn msg2(comptime ReturnType: type, receiver: Id, selector: Sel, arg1: anytype, a
     const Arg2 = @TypeOf(arg2);
     const Fn = *const fn (Id, Sel, Arg1, Arg2) callconv(.c) ReturnType;
     return @as(Fn, @ptrCast(&objc_msgSend))(receiver, selector, arg1, arg2);
+}
+
+fn msg4(comptime ReturnType: type, receiver: Id, selector: Sel, arg1: anytype, arg2: anytype, arg3: anytype, arg4: anytype) ReturnType {
+    const Arg1 = @TypeOf(arg1);
+    const Arg2 = @TypeOf(arg2);
+    const Arg3 = @TypeOf(arg3);
+    const Arg4 = @TypeOf(arg4);
+    const Fn = *const fn (Id, Sel, Arg1, Arg2, Arg3, Arg4) callconv(.c) ReturnType;
+    return @as(Fn, @ptrCast(&objc_msgSend))(receiver, selector, arg1, arg2, arg3, arg4);
 }

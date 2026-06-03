@@ -27,6 +27,7 @@ pub const EventSink = struct {
     on_navigation: *const fn (context: *anyopaque, event: NavigationEvent) void,
     on_new_tab_requested: ?*const fn (context: *anyopaque) void = null,
     on_tab_activated_requested: ?*const fn (context: *anyopaque, tab_id: u64) void = null,
+    on_tab_closed_requested: ?*const fn (context: *anyopaque, tab_id: u64) void = null,
 };
 
 pub const ChromeSink = struct {
@@ -62,6 +63,14 @@ pub fn emitNavigation(event: NavigationEvent) void {
 pub fn emitTabActivatedRequested(tab_id: u64) void {
     if (current_sink) |sink| {
         if (sink.on_tab_activated_requested) |callback| {
+            callback(sink.context, tab_id);
+        }
+    }
+}
+
+pub fn emitTabClosedRequested(tab_id: u64) void {
+    if (current_sink) |sink| {
+        if (sink.on_tab_closed_requested) |callback| {
             callback(sink.context, tab_id);
         }
     }

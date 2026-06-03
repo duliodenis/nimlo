@@ -43,6 +43,7 @@ pub const Browser = struct {
             .on_navigation = handleNavigationEvent,
             .on_new_tab_requested = handleNewTabRequested,
             .on_tab_activated_requested = handleTabActivatedRequested,
+            .on_tab_closed_requested = handleTabClosedRequested,
         });
         self.publishTabsChanged();
     }
@@ -102,6 +103,20 @@ pub const Browser = struct {
             self.webview_adapter.showWebView(handle);
             self.loadTab(active_tab.*) catch return;
         }
+        self.publishTabsChanged();
+    }
+
+    fn handleTabClosedRequested(context: *anyopaque, tab_id: u64) void {
+        const self: *Browser = @ptrCast(@alignCast(context));
+        if (!self.tabs.closeTab(tab_id)) return;
+
+        if (self.tabs.len() == 0) {
+            _ = self.tabs.createTab(
+                self.preferences.homepage_url,
+                self.private_mode.enabled,
+            ) catch return;
+        }
+
         self.publishTabsChanged();
     }
 
@@ -293,4 +308,42 @@ test "navigation event updates tab matching source WebView handle" {
     try std.testing.expectEqualStrings("CNN", browser.tabs.findTab(1).?.title);
     try std.testing.expectEqualStrings("Nimlo", browser.tabs.findTab(2).?.title);
     try std.testing.expectEqual(@as(tab_model.TabId, 2), browser.tabs.active_tab_id.?);
+}
+
+test "close tab command removes tab and activates adjacent tab" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.start();
+    const first = browser.tabs.active_tab_id.?;
+    const second = try browser.tabs.createTab("https://example.com", false);
+
+    webview_events.emitTabClosedRequested(second);
+
+    try std.testing.expectEqual(@as(usize, 1), browser.tabs.len());
+    try std.testing.expectEqual(first, browser.tabs.active_tab_id.?);
+}
+
+test "close final tab command creates a fresh startup tab" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.start();
+    const original = browser.tabs.active_tab_id.?;
+
+    webview_events.emitTabClosedRequested(original);
+
+    try std.testing.expectEqual(@as(usize, 1), browser.tabs.len());
+    try std.testing.expect(browser.tabs.active_tab_id.? != original);
+    try std.testing.expectEqualStrings("nimlo://start", browser.tabs.activeTab().?.current_url);
 }

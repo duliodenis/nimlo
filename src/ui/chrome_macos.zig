@@ -65,6 +65,7 @@ const NSViewTopPinnedWidth = NSViewMinYMargin | NSViewWidthSizable;
 const objc_pointer_alignment_log2: u8 = 3;
 
 extern "c" fn objc_msgSend() void;
+extern "c" fn arc4random_buf(buffer: *anyopaque, size: usize) void;
 
 // TODO(browser core): replace this single-window flag with real navigation state.
 var current_page_is_internal = false;
@@ -81,6 +82,8 @@ var current_webview_target: Id = null;
 var current_window: Id = null;
 var current_page_is_loading = false;
 var current_tab_snapshots: std.ArrayList(webview_events.TabSnapshot) = .empty;
+var webcrypto_master_key: [32]u8 = undefined;
+var webcrypto_master_key_initialized = false;
 
 pub fn install(window_handle: Id, content_view: Id, bounds: CGRect, webview: Id) !Id {
     current_window = window_handle;
@@ -674,8 +677,29 @@ fn installAddressBarTargetClass() void {
         @ptrCast(&navigationFailed),
         "v@:@@@",
     );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("_webCryptoMasterKeyForWebView:"),
+        @ptrCast(&webCryptoMasterKey),
+        "@@:@",
+    );
 
     c.objc_registerClassPair(target_class);
+}
+
+fn webCryptoMasterKey(_: Id, _: Sel, _: Id) callconv(.c) Id {
+    if (!webcrypto_master_key_initialized) {
+        arc4random_buf(&webcrypto_master_key, webcrypto_master_key.len);
+        webcrypto_master_key_initialized = true;
+    }
+
+    return msg2(
+        Id,
+        cls("NSData"),
+        sel("dataWithBytes:length:"),
+        &webcrypto_master_key,
+        webcrypto_master_key.len,
+    );
 }
 
 fn addressSubmitted(target: Id, _: Sel, _: Id) callconv(.c) void {

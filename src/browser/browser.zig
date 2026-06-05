@@ -13,6 +13,7 @@ pub const Browser = struct {
     private_mode: private_mode.PrivateModeConfig,
     tabs: tab_manager.TabManager,
     webview_adapter: *webview.WebViewAdapter,
+    last_published_tabs: std.ArrayList(webview_events.TabSnapshot),
 
     pub fn init(
         prefs: preferences.Preferences,
@@ -27,6 +28,7 @@ pub const Browser = struct {
             .private_mode = privacy,
             .tabs = tab_manager.TabManager.init(allocator),
             .webview_adapter = adapter,
+            .last_published_tabs = .empty,
         };
     }
 
@@ -51,6 +53,7 @@ pub const Browser = struct {
     pub fn deinit(self: *Browser) void {
         webview_events.clearSink();
         webview_events.clearChromeSink();
+        self.last_published_tabs.deinit(self.allocator);
         self.tabs.deinit();
     }
 
@@ -145,18 +148,38 @@ pub const Browser = struct {
     }
 
     fn publishTabsChanged(self: *Browser) void {
-        const snapshots = self.allocator.alloc(webview_events.TabSnapshot, self.tabs.len()) catch return;
-        for (self.tabs.tabs.items, 0..) |tab, index| {
-            snapshots[index] = .{
+        if (self.currentTabsMatchLastPublished()) return;
+
+        self.last_published_tabs.clearRetainingCapacity();
+        self.last_published_tabs.ensureTotalCapacity(self.allocator, self.tabs.len()) catch return;
+
+        for (self.tabs.tabs.items) |tab| {
+            self.last_published_tabs.appendAssumeCapacity(.{
                 .id = tab.id,
                 .title = tab.title,
                 .url = tab.current_url,
                 .favicon_url = tab.favicon_url,
                 .is_active = self.tabs.active_tab_id != null and self.tabs.active_tab_id.? == tab.id,
-            };
+            });
         }
 
-        webview_events.emitTabsChanged(snapshots);
+        webview_events.emitTabsChanged(self.last_published_tabs.items);
+    }
+
+    fn currentTabsMatchLastPublished(self: *Browser) bool {
+        if (self.tabs.len() != self.last_published_tabs.items.len) return false;
+
+        for (self.tabs.tabs.items, self.last_published_tabs.items) |tab, snapshot| {
+            if (tab.id != snapshot.id) return false;
+            if (!std.mem.eql(u8, tab.title, snapshot.title)) return false;
+            if (!std.mem.eql(u8, tab.current_url, snapshot.url)) return false;
+            if (!std.mem.eql(u8, tab.favicon_url, snapshot.favicon_url)) return false;
+
+            const is_active = self.tabs.active_tab_id != null and self.tabs.active_tab_id.? == tab.id;
+            if (is_active != snapshot.is_active) return false;
+        }
+
+        return true;
     }
 
     fn mapLoadingState(state: webview_events.LoadingState) tab_model.LoadingState {
@@ -167,6 +190,12 @@ pub const Browser = struct {
         };
     }
 };
+
+fn countTabsChanged(context: *anyopaque, tabs: []const webview_events.TabSnapshot) void {
+    _ = tabs;
+    const count: *usize = @ptrCast(@alignCast(context));
+    count.* += 1;
+}
 
 test "start creates one active startup tab" {
     var adapter = webview.WebViewAdapter.init();
@@ -243,6 +272,46 @@ test "navigation event maps loading state" {
         .loading_state = .idle,
     });
     try std.testing.expectEqual(tab_model.LoadingState.idle, browser.tabs.activeTab().?.loading_state);
+}
+
+test "duplicate tab snapshots are not republished" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    var publish_count: usize = 0;
+    webview_events.setChromeSink(.{
+        .context = &publish_count,
+        .on_tabs_changed = countTabsChanged,
+    });
+
+    try browser.start();
+    try std.testing.expectEqual(@as(usize, 1), publish_count);
+
+    webview_events.emitNavigation(.{
+        .url = "https://example.com",
+        .title = "Example",
+        .loading_state = .idle,
+    });
+    try std.testing.expectEqual(@as(usize, 2), publish_count);
+
+    webview_events.emitNavigation(.{
+        .url = "https://example.com",
+        .title = "Example",
+        .loading_state = .loading,
+    });
+    try std.testing.expectEqual(@as(usize, 2), publish_count);
+
+    webview_events.emitNavigation(.{
+        .url = "https://example.com",
+        .title = "Example Updated",
+        .loading_state = .idle,
+    });
+    try std.testing.expectEqual(@as(usize, 3), publish_count);
 }
 
 test "start does not create duplicate startup tabs" {

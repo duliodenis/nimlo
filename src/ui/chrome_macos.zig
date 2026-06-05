@@ -69,8 +69,12 @@ const objc_pointer_alignment_log2: u8 = 3;
 extern "c" fn objc_msgSend() void;
 extern "c" fn arc4random_buf(buffer: *anyopaque, size: usize) void;
 
-// TODO(browser core): replace this single-window flag with real navigation state.
-var current_page_is_internal = false;
+const WebViewChromeState = struct {
+    webview: Id,
+    is_internal: bool = false,
+    is_loading: bool = false,
+};
+
 var current_address_field: Id = null;
 var current_reload_button: Id = null;
 var current_tab_icon: Id = null;
@@ -82,8 +86,8 @@ var current_tab_scroll_view: Id = null;
 var current_tab_target: Id = null;
 var current_webview_target: Id = null;
 var current_window: Id = null;
-var current_page_is_loading = false;
 var current_tab_snapshots: std.ArrayList(webview_events.TabSnapshot) = .empty;
+var webview_chrome_states: std.ArrayList(WebViewChromeState) = .empty;
 var webcrypto_master_key: [32]u8 = undefined;
 var webcrypto_master_key_initialized = false;
 
@@ -95,17 +99,27 @@ pub fn install(window_handle: Id, content_view: Id, bounds: CGRect, webview: Id)
     return address_field;
 }
 
-pub fn noteExternalLoad() void {
-    current_page_is_internal = false;
-    setCurrentTabIcon(defaultFavicon());
+pub fn noteExternalLoad(webview: Id) void {
+    const state = ensureWebViewChromeState(webview) catch return;
+    state.is_internal = false;
+
+    if (isActiveWebView(webview)) {
+        setCurrentTabIcon(defaultFavicon());
+    }
 }
 
 pub fn noteInternalLoad(webview: Id) void {
-    current_page_is_internal = true;
-    setCurrentAddress("nimlo://start");
-    setCurrentTabIcon(systemSymbol("sparkles", "Nimlo"));
-    setCurrentTabTitle("Nimlo");
-    setWindowTitle("Nimlo");
+    const state = ensureWebViewChromeState(webview) catch return;
+    state.is_internal = true;
+    state.is_loading = false;
+
+    if (isActiveWebView(webview)) {
+        setCurrentAddress("nimlo://start");
+        setCurrentTabIcon(systemSymbol("sparkles", "Nimlo"));
+        setCurrentTabTitle("Nimlo");
+        setWindowTitle("Nimlo");
+        setLoadingState(false);
+    }
     webview_events.emitNavigation(.{
         .source_handle = webview,
         .url = "nimlo://start",
@@ -168,19 +182,32 @@ fn addToolbar(content_view: Id, bounds: CGRect, webview: Id) !Id {
 }
 
 pub fn configureWebView(webview: Id) void {
+    _ = ensureWebViewChromeState(webview) catch null;
+
     if (current_webview_target) |target| {
         msg1(void, webview, sel("setNavigationDelegate:"), target);
     }
 }
 
+pub fn forgetWebView(webview: Id) void {
+    for (webview_chrome_states.items, 0..) |state, index| {
+        if (state.webview == webview) {
+            _ = webview_chrome_states.orderedRemove(index);
+            return;
+        }
+    }
+}
+
 pub fn setActiveWebView(webview: Id) void {
+    _ = ensureWebViewChromeState(webview) catch null;
+
     if (current_webview_target) |target| {
         _ = c.object_setInstanceVariable(@ptrCast(@alignCast(target)), "webView", webview);
     }
     updateAddressFromWebView(webview);
     updateWindowTitleFromWebView(webview);
     _ = updateFaviconFromWebView(webview);
-    setLoadingState(false);
+    setLoadingState(webViewIsLoading(webview));
 }
 
 fn addTitlebarTabStrip(window_handle: Id, target: Id) !void {
@@ -779,7 +806,7 @@ fn addressSubmitted(target: Id, _: Sel, _: Id) callconv(.c) void {
     if (request == null) return;
 
     msg1(void, address_field, sel("setStringValue:"), nsString(url_z));
-    noteExternalLoad();
+    noteExternalLoad(webview);
     _ = msg1(Id, webview, sel("loadRequest:"), request);
     std.debug.print("address bar loading: {s}\n", .{normalized});
 }
@@ -825,13 +852,13 @@ fn windowDidResize(_: Id, _: Sel, _: Id) callconv(.c) void {
 fn reload(target: Id, _: Sel, _: Id) callconv(.c) void {
     const webview = getIvar(target, "webView") orelse return;
 
-    if (current_page_is_loading) {
+    if (webViewIsLoading(webview)) {
         _ = msg0(Id, webview, sel("stopLoading"));
-        setLoadingState(false);
+        setWebViewLoading(webview, false);
         return;
     }
 
-    if (current_page_is_internal) {
+    if (webViewIsInternal(webview)) {
         loadInternalStartPage(webview) catch return;
         std.debug.print("reloaded internal start page.\n", .{});
         return;
@@ -854,7 +881,7 @@ fn loadInternalStartPage(webview: Id) !void {
 
 fn navigationStarted(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
     _ = target;
-    setLoadingState(true);
+    setWebViewLoading(webview, true);
     updateAddressFromWebView(webview);
     updateWindowTitleFromWebView(webview);
     emitNavigationFromWebView(webview, .loading, null);
@@ -863,12 +890,12 @@ fn navigationStarted(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
 fn navigationChanged(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
     _ = target;
     updateAddressFromWebView(webview);
-    emitNavigationFromWebView(webview, if (current_page_is_loading) .loading else .idle, null);
+    emitNavigationFromWebView(webview, if (webViewIsLoading(webview)) .loading else .idle, null);
 }
 
 fn navigationFinished(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
     _ = target;
-    setLoadingState(false);
+    setWebViewLoading(webview, false);
     updateAddressFromWebView(webview);
     updateWindowTitleFromWebView(webview);
     const favicon_url = updateFaviconFromWebView(webview);
@@ -877,7 +904,7 @@ fn navigationFinished(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void 
 
 fn navigationFailed(target: Id, _: Sel, webview: Id, _: Id, _: Id) callconv(.c) void {
     _ = target;
-    setLoadingState(false);
+    setWebViewLoading(webview, false);
     updateAddressFromWebView(webview);
     emitNavigationFromWebView(webview, .failed, null);
 }
@@ -885,7 +912,7 @@ fn navigationFailed(target: Id, _: Sel, webview: Id, _: Id, _: Id) callconv(.c) 
 fn updateAddressFromWebView(webview: Id) void {
     const url = msg0(Id, webview, sel("URL"));
     if (url == null) {
-        if (current_page_is_internal) setCurrentAddress("nimlo://start");
+        if (isActiveWebView(webview) and webViewIsInternal(webview)) setCurrentAddress("nimlo://start");
         return;
     }
 
@@ -894,17 +921,21 @@ fn updateAddressFromWebView(webview: Id) void {
     const address = std.mem.span(raw);
     if (address.len == 0) return;
 
-    if (current_page_is_internal and std.mem.startsWith(u8, address, "about:")) {
+    if (webViewIsInternal(webview) and std.mem.startsWith(u8, address, "about:")) {
+        if (!isActiveWebView(webview)) return;
         setCurrentAddress("nimlo://start");
         return;
     }
 
-    current_page_is_internal = false;
+    setWebViewInternal(webview, false);
+    if (!isActiveWebView(webview)) return;
     setCurrentAddress(address);
 }
 
 fn updateWindowTitleFromWebView(webview: Id) void {
-    if (current_page_is_internal) {
+    if (!isActiveWebView(webview)) return;
+
+    if (webViewIsInternal(webview)) {
         setCurrentTabTitle("Nimlo");
         setWindowTitle("Nimlo");
         return;
@@ -939,6 +970,8 @@ fn updateWindowTitleFromWebView(webview: Id) void {
 }
 
 fn setFallbackWindowTitleFromUrl(webview: Id) void {
+    if (!isActiveWebView(webview)) return;
+
     const fallback = titleFromWebViewUrl(webview) orelse "Nimlo";
     const tab_title = std.heap.page_allocator.dupeZ(u8, fallback) catch return;
     setCurrentTabTitle(tab_title);
@@ -977,23 +1010,23 @@ fn setWindowTitle(title: [:0]const u8) void {
 }
 
 fn updateFaviconFromWebView(webview: Id) ?[:0]const u8 {
-    if (current_page_is_internal) {
-        setCurrentTabIcon(systemSymbol("sparkles", "Nimlo"));
+    if (webViewIsInternal(webview)) {
+        if (isActiveWebView(webview)) setCurrentTabIcon(systemSymbol("sparkles", "Nimlo"));
         return "";
     }
 
     const favicon_url = declaredFaviconUrl(webview) orelse rootFaviconUrl(webview) orelse {
-        setCurrentTabIcon(defaultFavicon());
+        if (isActiveWebView(webview)) setCurrentTabIcon(defaultFavicon());
         return null;
     };
     const ns_url = msg1(Id, cls("NSURL"), sel("URLWithString:"), nsString(favicon_url));
     if (ns_url == null) {
-        setCurrentTabIcon(defaultFavicon());
+        if (isActiveWebView(webview)) setCurrentTabIcon(defaultFavicon());
         return null;
     }
 
     const image = msg1(Id, msg0(Id, cls("NSImage"), sel("alloc")), sel("initWithContentsOfURL:"), ns_url);
-    setCurrentTabIcon(if (image) |value| value else defaultFavicon());
+    if (isActiveWebView(webview)) setCurrentTabIcon(if (image) |value| value else defaultFavicon());
     return favicon_url;
 }
 
@@ -1175,7 +1208,7 @@ fn emitNavigationFromWebView(webview: Id, loading_state: webview_events.LoadingS
     var url_text: []const u8 = "";
     var title_text: []const u8 = "";
 
-    if (current_page_is_internal) {
+    if (webViewIsInternal(webview)) {
         url_text = "nimlo://start";
         title_text = "Nimlo";
     } else {
@@ -1229,9 +1262,56 @@ fn titleFromWebViewUrl(webview: Id) ?[]const u8 {
     return url[host_start..host_end];
 }
 
-fn setLoadingState(is_loading: bool) void {
-    current_page_is_loading = is_loading;
+fn activeWebView() Id {
+    return getIvar(current_webview_target, "webView");
+}
 
+fn isActiveWebView(webview: Id) bool {
+    return webview != null and webview == activeWebView();
+}
+
+fn ensureWebViewChromeState(webview: Id) !*WebViewChromeState {
+    if (webview == null) return error.MacOSWebViewUnavailable;
+
+    for (webview_chrome_states.items) |*state| {
+        if (state.webview == webview) return state;
+    }
+
+    try webview_chrome_states.append(std.heap.page_allocator, .{ .webview = webview });
+    return &webview_chrome_states.items[webview_chrome_states.items.len - 1];
+}
+
+fn webViewChromeState(webview: Id) ?*WebViewChromeState {
+    if (webview == null) return null;
+
+    for (webview_chrome_states.items) |*state| {
+        if (state.webview == webview) return state;
+    }
+
+    return null;
+}
+
+fn setWebViewInternal(webview: Id, is_internal: bool) void {
+    const state = ensureWebViewChromeState(webview) catch return;
+    state.is_internal = is_internal;
+}
+
+fn webViewIsInternal(webview: Id) bool {
+    return if (webViewChromeState(webview)) |state| state.is_internal else false;
+}
+
+fn setWebViewLoading(webview: Id, is_loading: bool) void {
+    const state = ensureWebViewChromeState(webview) catch return;
+    state.is_loading = is_loading;
+
+    if (isActiveWebView(webview)) setLoadingState(is_loading);
+}
+
+fn webViewIsLoading(webview: Id) bool {
+    return if (webViewChromeState(webview)) |state| state.is_loading else false;
+}
+
+fn setLoadingState(is_loading: bool) void {
     if (current_reload_button) |button| {
         if (is_loading) {
             setToolbarButtonSymbol(button, "xmark", "Stop");

@@ -56,7 +56,7 @@ pub const MacOSWebView = struct {
         const request = msg1(Id, cls("NSURLRequest"), sel("requestWithURL:"), ns_url);
         if (request == null) return error.MacOSURLRequestUnavailable;
 
-        chrome.noteExternalLoad();
+        chrome.noteExternalLoad(self.handle);
         _ = msg1(Id, self.handle, sel("loadRequest:"), request);
         std.debug.print("macOS WKWebView loading: {s}\n", .{url});
     }
@@ -112,6 +112,7 @@ pub const MacOSWebView = struct {
             msg0(void, webview, sel("stopLoading"));
             msg1(void, webview, sel("setNavigationDelegate:"), @as(Id, null));
             msg0(void, webview, sel("removeFromSuperview"));
+            chrome.forgetWebView(webview);
             _ = self.webviews.orderedRemove(index);
             if (self.handle == handle) self.handle = null;
             msg0(void, webview, sel("release"));

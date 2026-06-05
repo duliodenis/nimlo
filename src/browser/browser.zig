@@ -108,13 +108,27 @@ pub const Browser = struct {
 
     fn handleTabClosedRequested(context: *anyopaque, tab_id: u64) void {
         const self: *Browser = @ptrCast(@alignCast(context));
+        const closing_tab = self.tabs.findTab(tab_id) orelse return;
+        const closing_handle = closing_tab.webview_handle;
         if (!self.tabs.closeTab(tab_id)) return;
+
+        self.webview_adapter.destroyWebView(closing_handle);
 
         if (self.tabs.len() == 0) {
             _ = self.tabs.createTab(
                 self.preferences.homepage_url,
                 self.private_mode.enabled,
             ) catch return;
+        }
+
+        const active_tab = self.tabs.activeTab() orelse return;
+        if (active_tab.webview_handle) |handle| {
+            self.webview_adapter.showWebView(handle);
+        } else {
+            const handle = self.webview_adapter.createWebView() catch return;
+            active_tab.attachWebView(handle);
+            self.webview_adapter.showWebView(handle);
+            self.loadTab(active_tab.*) catch return;
         }
 
         self.publishTabsChanged();

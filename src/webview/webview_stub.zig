@@ -33,6 +33,11 @@ pub const StubWebView = struct {
         _ = handle;
     }
 
+    pub fn destroyWebView(self: *StubWebView, handle: ?*anyopaque) void {
+        _ = self;
+        _ = handle;
+    }
+
     pub fn activeHandle(self: *StubWebView) ?*anyopaque {
         _ = self;
         return null;

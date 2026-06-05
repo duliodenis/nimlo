@@ -32,6 +32,10 @@ pub const WebViewAdapter = struct {
         self.platform.showWebView(handle);
     }
 
+    pub fn destroyWebView(self: *WebViewAdapter, handle: ?*anyopaque) void {
+        self.platform.destroyWebView(handle);
+    }
+
     pub fn activeHandle(self: *WebViewAdapter) ?*anyopaque {
         return self.platform.activeHandle();
     }

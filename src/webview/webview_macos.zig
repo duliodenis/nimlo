@@ -103,6 +103,22 @@ pub const MacOSWebView = struct {
         }
     }
 
+    pub fn destroyWebView(self: *MacOSWebView, handle: ?*anyopaque) void {
+        if (handle == null) return;
+
+        for (self.webviews.items, 0..) |webview, index| {
+            if (webview != handle) continue;
+
+            msg0(void, webview, sel("stopLoading"));
+            msg1(void, webview, sel("setNavigationDelegate:"), @as(Id, null));
+            msg0(void, webview, sel("removeFromSuperview"));
+            _ = self.webviews.orderedRemove(index);
+            if (self.handle == handle) self.handle = null;
+            msg0(void, webview, sel("release"));
+            return;
+        }
+    }
+
     pub fn activeHandle(self: *MacOSWebView) ?*anyopaque {
         return self.handle;
     }

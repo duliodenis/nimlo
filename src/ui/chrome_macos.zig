@@ -75,6 +75,11 @@ const WebViewChromeState = struct {
     is_loading: bool = false,
 };
 
+const CachedFavicon = struct {
+    url: []const u8,
+    image: Id,
+};
+
 var current_address_field: Id = null;
 var current_reload_button: Id = null;
 var current_tab_icon: Id = null;
@@ -88,6 +93,7 @@ var current_webview_target: Id = null;
 var current_window: Id = null;
 var current_tab_snapshots: std.ArrayList(webview_events.TabSnapshot) = .empty;
 var webview_chrome_states: std.ArrayList(WebViewChromeState) = .empty;
+var favicon_cache: std.ArrayList(CachedFavicon) = .empty;
 var webcrypto_master_key: [32]u8 = undefined;
 var webcrypto_master_key_initialized = false;
 
@@ -206,7 +212,6 @@ pub fn setActiveWebView(webview: Id) void {
     }
     updateAddressFromWebView(webview);
     updateWindowTitleFromWebView(webview);
-    _ = updateFaviconFromWebView(webview);
     setLoadingState(webViewIsLoading(webview));
 }
 
@@ -554,12 +559,7 @@ fn removeAllSubviews(view: Id) void {
 
 fn tabImage(tab: webview_events.TabSnapshot) Id {
     if (tab.favicon_url.len > 0) {
-        const url_z = std.heap.page_allocator.dupeZ(u8, tab.favicon_url) catch return defaultFaviconForTab(tab);
-        const ns_url = msg1(Id, cls("NSURL"), sel("URLWithString:"), nsString(url_z));
-        if (ns_url != null) {
-            const image = msg1(Id, msg0(Id, cls("NSImage"), sel("alloc")), sel("initWithContentsOfURL:"), ns_url);
-            if (image != null) return sizedTabImage(image);
-        }
+        if (cachedFaviconImage(tab.favicon_url)) |image| return sizedTabImage(image);
     }
 
     return sizedTabImage(defaultFaviconForTab(tab));
@@ -1015,19 +1015,40 @@ fn updateFaviconFromWebView(webview: Id) ?[:0]const u8 {
         return "";
     }
 
+    if (!isActiveWebView(webview)) return rootFaviconUrl(webview);
+
     const favicon_url = declaredFaviconUrl(webview) orelse rootFaviconUrl(webview) orelse {
-        if (isActiveWebView(webview)) setCurrentTabIcon(defaultFavicon());
+        setCurrentTabIcon(defaultFavicon());
         return null;
     };
     const ns_url = msg1(Id, cls("NSURL"), sel("URLWithString:"), nsString(favicon_url));
     if (ns_url == null) {
-        if (isActiveWebView(webview)) setCurrentTabIcon(defaultFavicon());
+        setCurrentTabIcon(defaultFavicon());
         return null;
     }
 
     const image = msg1(Id, msg0(Id, cls("NSImage"), sel("alloc")), sel("initWithContentsOfURL:"), ns_url);
-    if (isActiveWebView(webview)) setCurrentTabIcon(if (image) |value| value else defaultFavicon());
+    if (image) |value| rememberFaviconImage(favicon_url, value);
+    setCurrentTabIcon(if (image) |value| value else defaultFavicon());
     return favicon_url;
+}
+
+fn cachedFaviconImage(url: []const u8) ?Id {
+    for (favicon_cache.items) |entry| {
+        if (std.mem.eql(u8, entry.url, url)) return entry.image;
+    }
+
+    return null;
+}
+
+fn rememberFaviconImage(url: []const u8, image: Id) void {
+    if (image == null or cachedFaviconImage(url) != null) return;
+
+    const stored_url = std.heap.page_allocator.dupe(u8, url) catch return;
+    favicon_cache.append(std.heap.page_allocator, .{
+        .url = stored_url,
+        .image = image,
+    }) catch return;
 }
 
 fn declaredFaviconUrl(webview: Id) ?[:0]const u8 {

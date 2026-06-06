@@ -59,6 +59,9 @@ const NSLayoutAttributeLeft: isize = 1;
 const NSTextAlignmentCenter: isize = 1;
 const NSUTF8StringEncoding: usize = 4;
 const NSLineBreakByTruncatingTail: isize = 4;
+const NSEventModifierFlagShift: usize = 1 << 17;
+const NSEventModifierFlagControl: usize = 1 << 18;
+const NSEventModifierFlagCommand: usize = 1 << 20;
 
 const NSViewMinYMargin: usize = 1 << 3;
 const NSViewWidthSizable: usize = 1 << 1;
@@ -104,6 +107,7 @@ var favicon_cache: std.ArrayList(CachedFavicon) = .empty;
 var rendered_tab_controls: std.ArrayList(RenderedTabControl) = .empty;
 var webcrypto_master_key: [32]u8 = undefined;
 var webcrypto_master_key_initialized = false;
+var command_menus_installed = false;
 
 pub fn install(window_handle: Id, content_view: Id, bounds: CGRect, webview: Id) !Id {
     current_window = window_handle;
@@ -149,6 +153,7 @@ fn addToolbar(content_view: Id, bounds: CGRect, webview: Id) !Id {
     _ = msg0(Id, target, sel("retain"));
     _ = c.object_setInstanceVariable(@ptrCast(@alignCast(target.?)), "webView", webview);
     current_webview_target = target;
+    installCommandMenus(target);
 
     try addTitlebarTabStrip(current_window orelse return error.MacOSWindowUnavailable, target);
 
@@ -641,6 +646,36 @@ fn sizedTabImage(image: Id) Id {
     return image;
 }
 
+fn activeTabId() ?u64 {
+    for (current_tab_snapshots.items) |tab| {
+        if (tab.is_active) return tab.id;
+    }
+
+    return null;
+}
+
+fn activateRelativeTab(direction: isize) void {
+    const tabs = current_tab_snapshots.items;
+    if (tabs.len == 0) return;
+
+    var active_index: usize = 0;
+    for (tabs, 0..) |tab, index| {
+        if (tab.is_active) {
+            active_index = index;
+            break;
+        }
+    }
+
+    const next_index = if (direction > 0)
+        (active_index + 1) % tabs.len
+    else if (active_index == 0)
+        tabs.len - 1
+    else
+        active_index - 1;
+
+    webview_events.emitTabActivatedRequested(tabs[next_index].id);
+}
+
 fn addToolbarButton(
     content_view: Id,
     target: Id,
@@ -679,6 +714,67 @@ fn addToolbarButton(
     msg1(void, button, sel("setAction:"), sel(action));
     msg1(void, content_view, sel("addSubview:"), button);
     return button;
+}
+
+fn installCommandMenus(target: Id) void {
+    if (command_menus_installed) return;
+
+    const app = msg0(Id, cls("NSApplication"), sel("sharedApplication"));
+    const main_menu = msg0(Id, msg0(Id, cls("NSMenu"), sel("alloc")), sel("init"));
+    if (app == null or main_menu == null) return;
+
+    const app_menu = msg0(Id, msg0(Id, cls("NSMenu"), sel("alloc")), sel("init"));
+    const app_item = msg0(Id, msg0(Id, cls("NSMenuItem"), sel("alloc")), sel("init"));
+    if (app_menu != null and app_item != null) {
+        addMenuItem(app_menu, "Quit Nimlo", sel("terminate:"), "q", NSEventModifierFlagCommand, null);
+        msg1(void, app_item, sel("setSubmenu:"), app_menu);
+        msg1(void, main_menu, sel("addItem:"), app_item);
+    }
+
+    const file_menu = msg0(Id, msg0(Id, cls("NSMenu"), sel("alloc")), sel("init"));
+    const file_item = msg0(Id, msg0(Id, cls("NSMenuItem"), sel("alloc")), sel("init"));
+    if (file_menu != null and file_item != null) {
+        addMenuItem(file_menu, "New Tab", sel("newTab:"), "t", NSEventModifierFlagCommand, target);
+        addMenuItem(file_menu, "Close Tab", sel("closeActiveTab:"), "w", NSEventModifierFlagCommand, target);
+        msg1(void, file_item, sel("setTitle:"), nsString("File"));
+        msg1(void, file_item, sel("setSubmenu:"), file_menu);
+        msg1(void, main_menu, sel("addItem:"), file_item);
+    }
+
+    const navigate_menu = msg0(Id, msg0(Id, cls("NSMenu"), sel("alloc")), sel("init"));
+    const navigate_item = msg0(Id, msg0(Id, cls("NSMenuItem"), sel("alloc")), sel("init"));
+    if (navigate_menu != null and navigate_item != null) {
+        addMenuItem(navigate_menu, "Back", sel("goBack:"), "[", NSEventModifierFlagCommand, target);
+        addMenuItem(navigate_menu, "Forward", sel("goForward:"), "]", NSEventModifierFlagCommand, target);
+        addMenuItem(navigate_menu, "Reload", sel("reload:"), "r", NSEventModifierFlagCommand, target);
+        addMenuItem(navigate_menu, "Focus Address Bar", sel("focusAddressBar:"), "l", NSEventModifierFlagCommand, target);
+        addMenuItem(navigate_menu, "Next Tab", sel("nextTab:"), "\t", NSEventModifierFlagControl, target);
+        addMenuItem(navigate_menu, "Previous Tab", sel("previousTab:"), "\t", NSEventModifierFlagControl | NSEventModifierFlagShift, target);
+        msg1(void, navigate_item, sel("setTitle:"), nsString("Navigate"));
+        msg1(void, navigate_item, sel("setSubmenu:"), navigate_menu);
+        msg1(void, main_menu, sel("addItem:"), navigate_item);
+    }
+
+    msg1(void, app, sel("setMainMenu:"), main_menu);
+    command_menus_installed = true;
+}
+
+fn addMenuItem(menu: Id, title: [:0]const u8, action: Sel, key: [:0]const u8, modifiers: usize, target: Id) void {
+    if (menu == null) return;
+
+    const item = msg3(
+        Id,
+        msg0(Id, cls("NSMenuItem"), sel("alloc")),
+        sel("initWithTitle:action:keyEquivalent:"),
+        nsString(title),
+        action,
+        nsString(key),
+    );
+    if (item == null) return;
+
+    msg1(void, item, sel("setKeyEquivalentModifierMask:"), modifiers);
+    if (target != null) msg1(void, item, sel("setTarget:"), target);
+    msg1(void, menu, sel("addItem:"), item);
 }
 
 fn systemSymbol(symbol_name: [:0]const u8, accessibility_description: [:0]const u8) Id {
@@ -773,6 +869,30 @@ fn installAddressBarTargetClass() void {
         target_class,
         c.sel_registerName("closeTab:"),
         @ptrCast(&closeTab),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("closeActiveTab:"),
+        @ptrCast(&closeActiveTab),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("focusAddressBar:"),
+        @ptrCast(&focusAddressBar),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("nextTab:"),
+        @ptrCast(&nextTab),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("previousTab:"),
+        @ptrCast(&previousTab),
         "v@:@",
     );
     _ = c.class_addMethod(
@@ -906,6 +1026,27 @@ fn closeTab(_: Id, _: Sel, sender: Id) callconv(.c) void {
     if (tab_id <= 0) return;
 
     webview_events.emitTabClosedRequested(@intCast(tab_id));
+}
+
+fn closeActiveTab(_: Id, _: Sel, _: Id) callconv(.c) void {
+    const tab_id = activeTabId() orelse return;
+    webview_events.emitTabClosedRequested(tab_id);
+}
+
+fn focusAddressBar(_: Id, _: Sel, _: Id) callconv(.c) void {
+    const address_field = current_address_field orelse return;
+    if (current_window) |window| {
+        msg1(void, window, sel("makeFirstResponder:"), address_field);
+    }
+    msg1(void, address_field, sel("selectText:"), @as(Id, null));
+}
+
+fn nextTab(_: Id, _: Sel, _: Id) callconv(.c) void {
+    activateRelativeTab(1);
+}
+
+fn previousTab(_: Id, _: Sel, _: Id) callconv(.c) void {
+    activateRelativeTab(-1);
 }
 
 fn windowDidResize(_: Id, _: Sel, _: Id) callconv(.c) void {
@@ -1476,6 +1617,14 @@ fn msg2(comptime ReturnType: type, receiver: Id, selector: Sel, arg1: anytype, a
     const Arg2 = @TypeOf(arg2);
     const Fn = *const fn (Id, Sel, Arg1, Arg2) callconv(.c) ReturnType;
     return @as(Fn, @ptrCast(&objc_msgSend))(receiver, selector, arg1, arg2);
+}
+
+fn msg3(comptime ReturnType: type, receiver: Id, selector: Sel, arg1: anytype, arg2: anytype, arg3: anytype) ReturnType {
+    const Arg1 = @TypeOf(arg1);
+    const Arg2 = @TypeOf(arg2);
+    const Arg3 = @TypeOf(arg3);
+    const Fn = *const fn (Id, Sel, Arg1, Arg2, Arg3) callconv(.c) ReturnType;
+    return @as(Fn, @ptrCast(&objc_msgSend))(receiver, selector, arg1, arg2, arg3);
 }
 
 fn msg4(comptime ReturnType: type, receiver: Id, selector: Sel, arg1: anytype, arg2: anytype, arg3: anytype, arg4: anytype) ReturnType {

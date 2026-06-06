@@ -134,12 +134,12 @@ Nimlo
 
 ### 0.4 — Keyboard and Menu Commands
 
-- [ ] Focus address bar
-- [ ] New tab
-- [ ] Close active tab
-- [ ] Reload
-- [ ] Back and forward
-- [ ] Next and previous tab
+- [x] Focus address bar
+- [x] New tab
+- [x] Close active tab
+- [x] Reload
+- [x] Back and forward
+- [x] Next and previous tab
 
 ### 0.5 — Bookmarks and History
 

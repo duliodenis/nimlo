@@ -49,8 +49,8 @@ pub const html =
     \\      <div class="status">
     \\        <svg class="check" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 6 9 17l-5-5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
     \\        <div>
-    \\          <h2>Nimlo is up to date for this local build.</h2>
-    \\          <p>Experimental macOS browser shell built in Zig with a native AppKit interface and system WebKit rendering.</p>
+    \\          <h2 id="update-title">Checking for updates...</h2>
+    \\          <p id="update-detail">Comparing this local build with the latest published Nimlo version.</p>
     \\        </div>
     \\      </div>
     \\    </section>
@@ -64,6 +64,7 @@ pub const html =
     \\        <div>Platform</div><div id="platform">macOS</div>
     \\        <div>Language</div><div id="language">Unknown</div>
     \\        <div>Viewport</div><div id="viewport">Unknown</div>
+    \\        <div>Latest Version</div><div id="latest-version">Checking...</div>
     \\        <div>Website Data</div><div>Nonpersistent WebKit data store by default</div>
     \\      </div>
     \\    </section>
@@ -91,6 +92,55 @@ pub const html =
     \\    const viewportNode = document.getElementById("viewport");
     \\    viewportNode.textContent = viewport();
     \\    window.addEventListener("resize", () => { viewportNode.textContent = viewport(); });
+    \\
+    \\    const currentVersion = "0.1.0";
+    \\    const latestVersionUrl = "https://nimlo.org/version.latest";
+    \\    const updateTitle = document.getElementById("update-title");
+    \\    const updateDetail = document.getElementById("update-detail");
+    \\    const latestVersionNode = document.getElementById("latest-version");
+    \\
+    \\    const parseVersion = (version) => {
+    \\      const clean = version.trim().replace(/^v/i, "");
+    \\      if (!/^\d+(?:\.\d+){0,2}$/.test(clean)) return null;
+    \\      const parts = clean.split(".").map((part) => Number.parseInt(part, 10));
+    \\      while (parts.length < 3) parts.push(0);
+    \\      return parts;
+    \\    };
+    \\
+    \\    const compareVersions = (left, right) => {
+    \\      const leftParts = parseVersion(left);
+    \\      const rightParts = parseVersion(right);
+    \\      if (!leftParts || !rightParts) return null;
+    \\      for (let index = 0; index < 3; index += 1) {
+    \\        if (leftParts[index] > rightParts[index]) return 1;
+    \\        if (leftParts[index] < rightParts[index]) return -1;
+    \\      }
+    \\      return 0;
+    \\    };
+    \\
+    \\    fetch(latestVersionUrl, { cache: "no-store" })
+    \\      .then((response) => {
+    \\        if (!response.ok) throw new Error("Version check failed");
+    \\        return response.text();
+    \\      })
+    \\      .then((text) => {
+    \\        const latestVersion = text.trim().split(/\s+/)[0] || "";
+    \\        const comparison = compareVersions(currentVersion, latestVersion);
+    \\        if (comparison === null) throw new Error("Invalid latest version");
+    \\        latestVersionNode.textContent = latestVersion;
+    \\        if (comparison < 0) {
+    \\          updateTitle.textContent = "A newer version of Nimlo is available.";
+    \\          updateDetail.textContent = `This build is ${currentVersion}. The latest published version is ${latestVersion}.`;
+    \\        } else {
+    \\          updateTitle.textContent = "Nimlo is up to date for this local build.";
+    \\          updateDetail.textContent = `This build matches the latest published version: ${latestVersion}.`;
+    \\        }
+    \\      })
+    \\      .catch(() => {
+    \\        latestVersionNode.textContent = "Unavailable";
+    \\        updateTitle.textContent = "Could not check for updates.";
+    \\        updateDetail.textContent = "Nimlo could not reach the published version file for this check.";
+    \\      });
     \\  </script>
     \\</body>
     \\</html>

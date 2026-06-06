@@ -9,13 +9,30 @@ The first version is intentionally modest: a clean browser shell written primari
 
 ## Project Status
 
-Nimlo is in the earliest planning and prototyping stage.
+Nimlo is an active macOS prototype.
 
 Current goal:
 
-> Build a minimal desktop browser that opens a window, loads a page, and supports basic navigation.
+> Build a small, usable desktop browser shell with stable navigation, tabs, and local-first privacy defaults.
 
 This is not yet a production browser and should not be treated as a secure replacement for Chrome, Safari, Firefox, or Edge.
+
+Current prototype capabilities:
+
+- macOS app bundle built with Zig
+- Native AppKit window chrome
+- Embedded WebKit `WKWebView` rendering
+- Default Nimlo start page
+- Address bar with URL/search normalization
+- Back, forward, reload, and stop controls
+- New tab, close tab, and tab switching
+- Independent `WKWebView` per tab
+- Per-tab URL, title, favicon, loading, and back/forward state
+- Native tab strip with in-place updates
+- Closed tabs destroy their native WebView
+- Nonpersistent WebKit website data store by default
+- Process-local WebCrypto master key for nonpersistent browsing sessions
+- No telemetry or account features
 
 ## Philosophy
 
@@ -91,49 +108,61 @@ Nimlo
 
 ### 0.1 — First Window
 
-- Launch from `zig build run`
-- Open a desktop window
-- Embed a system WebView
-- Load a default start page
-- Load a typed URL
+- [x] Launch from `zig build run`
+- [x] Open a desktop window
+- [x] Embed a system WebView
+- [x] Load a default start page
+- [x] Load a typed URL
 
 ### 0.2 — Basic Browser Controls
 
-- Address bar
-- Back
-- Forward
-- Reload
-- Stop loading
-- Page title updates
+- [x] Address bar
+- [x] Back
+- [x] Forward
+- [x] Reload
+- [x] Stop loading
+- [x] Page title updates
 
 ### 0.3 — Tabs
 
-- New tab
-- Close tab
-- Switch tabs
-- Independent page state per tab
+- [x] New tab
+- [x] Close tab
+- [x] Switch tabs
+- [x] Independent page state per tab
+- [x] Independent WebView per tab
+- [x] Native WebView cleanup on close
 
-### 0.4 — Bookmarks and History
+### 0.4 — Keyboard and Menu Commands
 
-- Save bookmarks
-- View bookmarks
-- Remove bookmarks
-- Save local browsing history
-- View history
+- [ ] Focus address bar
+- [ ] New tab
+- [ ] Close active tab
+- [ ] Reload
+- [ ] Back and forward
+- [ ] Next and previous tab
 
-### 0.5 — Settings
+### 0.5 — Bookmarks and History
 
-- Default search engine
-- Homepage/start page
-- Download directory
-- Theme preference
+- [ ] Save bookmarks
+- [ ] View bookmarks
+- [ ] Remove bookmarks
+- [ ] Save local browsing history
+- [ ] View history
 
-### 0.6 — Private Mode
+### 0.6 — Settings
 
-- Private tab or private window
-- No history persistence
-- No session restore persistence
-- Clear visual private mode indicator
+- [ ] Default search engine
+- [ ] Homepage/start page
+- [ ] Download directory
+- [ ] Theme preference
+
+### 0.7 — Private Mode
+
+- [x] Nonpersistent WebKit data store by default
+- [x] No history persistence yet
+- [x] No session restore persistence yet
+- [ ] Private tab or private window distinction
+- [ ] Clear visual private mode indicator
 
 ### 1.0 — Lightweight Daily Browser Shell
 
@@ -179,30 +208,40 @@ Future directions may include:
 
 ## Development
 
-Requirements are still being finalized.
-
-Expected tools:
+Current tools:
 
 - Zig
-- Native system WebView layer
-- Platform-specific dependencies as needed
+- macOS
+- AppKit
+- WebKit
 
-Eventually, the project should run with:
+Run the app:
 
 ```bash
 zig build run
 ```
 
-## Repository Layout
+Build the macOS app bundle:
 
-Planned structure:
+```bash
+zig build bundle
+```
+
+Run tests:
+
+```bash
+zig build test
+```
+
+## Repository Layout
 
 ```text
 nimlo/
 ├── README.md
-├── SPEC.md
 ├── LICENSE
 ├── build.zig
+├── docs/
+│   └── SPECS.md
 ├── src/
 │   ├── main.zig
 │   ├── app/
@@ -213,9 +252,7 @@ nimlo/
 │   ├── privacy/
 │   ├── ui/
 │   └── experimental_engine/
-├── assets/
-├── tests/
-└── docs/
+└── assets/
 ```
 
 ## Contributing
@@ -233,14 +270,7 @@ Good first areas will likely include:
 - Platform setup notes
 
 ## License
-
-License not chosen yet.
-
-Recommended options:
-
 - MIT for maximum simplicity
-- Apache-2.0 for stronger patent language
-- MPL-2.0 if the project wants browser-style file-level copyleft
 
 ## Name
 

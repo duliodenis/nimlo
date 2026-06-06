@@ -56,6 +56,8 @@ const NSModalResponseSecondButtonReturn: isize = 1001;
 const NSImageLeft: isize = 2;
 const NSImageScaleProportionallyDown: isize = 1;
 const NSImageSymbolScaleMedium: isize = 2;
+const WKNavigationActionPolicyCancel: isize = 0;
+const WKNavigationActionPolicyAllow: isize = 1;
 const NSLayoutAttributeLeft: isize = 1;
 const NSTextAlignmentCenter: isize = 1;
 const NSUTF8StringEncoding: usize = 4;
@@ -77,6 +79,9 @@ const WebViewChromeState = struct {
     webview: Id,
     is_internal: bool = false,
     is_loading: bool = false,
+    local_directory_url: []const u8 = "",
+    local_directory_title: []const u8 = "",
+    local_directory_temp_url: []const u8 = "",
 };
 
 const CachedFavicon = struct {
@@ -89,6 +94,14 @@ const RenderedTabControl = struct {
     button: Id,
     close_button: Id,
     seen: bool = false,
+};
+
+const NavigationDecisionHandler = extern struct {
+    isa: ?*anyopaque,
+    flags: c_int,
+    reserved: c_int,
+    invoke: *const fn (*NavigationDecisionHandler, isize) callconv(.c) void,
+    descriptor: ?*anyopaque,
 };
 
 var current_address_field: Id = null;
@@ -109,6 +122,7 @@ var rendered_tab_controls: std.ArrayList(RenderedTabControl) = .empty;
 var webcrypto_master_key: [32]u8 = undefined;
 var webcrypto_master_key_initialized = false;
 var command_menus_installed = false;
+var local_directory_page_counter: usize = 0;
 
 pub fn install(window_handle: Id, content_view: Id, bounds: CGRect, webview: Id) !Id {
     current_window = window_handle;
@@ -121,6 +135,7 @@ pub fn install(window_handle: Id, content_view: Id, bounds: CGRect, webview: Id)
 pub fn noteExternalLoad(webview: Id) void {
     const state = ensureWebViewChromeState(webview) catch return;
     state.is_internal = false;
+    clearLocalDirectoryState(state);
 
     if (isActiveWebView(webview)) {
         setCurrentTabIcon(defaultFavicon());
@@ -131,6 +146,7 @@ pub fn noteInternalLoad(webview: Id) void {
     const state = ensureWebViewChromeState(webview) catch return;
     state.is_internal = true;
     state.is_loading = false;
+    clearLocalDirectoryState(state);
 
     if (isActiveWebView(webview)) {
         setCurrentAddress("nimlo://start");
@@ -945,6 +961,12 @@ fn installAddressBarTargetClass() void {
     );
     _ = c.class_addMethod(
         target_class,
+        c.sel_registerName("webView:decidePolicyForNavigationAction:decisionHandler:"),
+        @ptrCast(&decideNavigationPolicy),
+        "v@:@@@?",
+    );
+    _ = c.class_addMethod(
+        target_class,
         c.sel_registerName("webView:didReceiveServerRedirectForProvisionalNavigation:"),
         @ptrCast(&navigationChanged),
         "v@:@@",
@@ -1134,26 +1156,78 @@ fn tryLoadLocalDirectory(webview: Id, file_url: []const u8) bool {
     defer _ = std.c.closedir(dir);
 
     const html = directoryListingHtml(path, file_url, dir) catch return false;
-    const html_z = std.heap.page_allocator.dupeZ(u8, html) catch return false;
+    const page_path = writeTemporaryDirectoryListing(html) catch return false;
+    const page_url = localFileUrl(page_path, false) catch return false;
+    const page_url_text = fileUrlString(page_path, false) catch return false;
+    const read_access_url = localFileUrl("/", true) catch return false;
 
     _ = msg2(
         Id,
         webview,
-        sel("loadHTMLString:baseURL:"),
-        nsString(html_z),
-        @as(Id, null),
+        sel("loadFileURL:allowingReadAccessToURL:"),
+        page_url,
+        read_access_url,
     );
-    noteLocalDirectoryLoad(webview, file_url, path);
+    noteLocalDirectoryLoad(webview, file_url, path, page_url_text);
     return true;
 }
 
-fn noteLocalDirectoryLoad(webview: Id, file_url: []const u8, path: []const u8) void {
+fn localFileUrl(path: []const u8, is_directory: bool) !Id {
+    const path_z = try std.heap.page_allocator.dupeZ(u8, path);
+    const url = msg2(Id, cls("NSURL"), sel("fileURLWithPath:isDirectory:"), nsString(path_z), is_directory);
+    if (url == null) return error.LocalFileUrlUnavailable;
+    return url;
+}
+
+fn fileUrlString(path: []const u8, is_directory: bool) ![]u8 {
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(std.heap.page_allocator);
+
+    try appendFileUrl(&output, path, is_directory);
+    return output.toOwnedSlice(std.heap.page_allocator);
+}
+
+fn writeTemporaryDirectoryListing(html: []const u8) ![]const u8 {
+    local_directory_page_counter += 1;
+    const path = try std.fmt.allocPrint(
+        std.heap.page_allocator,
+        "/tmp/nimlo-directory-index-{d}-{d}.html",
+        .{ std.c.getpid(), local_directory_page_counter },
+    );
+    const path_z = try std.heap.page_allocator.dupeZ(u8, path);
+    const file = std.c.fopen(path_z.ptr, "wb") orelse return error.LocalDirectoryListingUnavailable;
+    defer _ = std.c.fclose(file);
+
+    if (std.c.fwrite(html.ptr, 1, html.len, file) != html.len) {
+        return error.LocalDirectoryListingWriteFailed;
+    }
+
+    return path;
+}
+
+fn localFileUrlIsDirectory(file_url: []const u8) bool {
+    const path = filePathFromUrl(file_url) catch return false;
+    defer std.heap.page_allocator.free(path);
+
+    const path_z = std.heap.page_allocator.dupeZ(u8, path) catch return false;
+    const dir = std.c.opendir(path_z.ptr) orelse return false;
+    defer _ = std.c.closedir(dir);
+
+    return true;
+}
+
+fn noteLocalDirectoryLoad(webview: Id, file_url: []const u8, path: []const u8, page_url_text: []const u8) void {
     setWebViewInternal(webview, false);
     setWebViewLoading(webview, false);
 
     const title = std.fmt.allocPrint(std.heap.page_allocator, "Index of {s}", .{std.fs.path.basename(path)}) catch "Local Folder";
     const title_z = std.heap.page_allocator.dupeZ(u8, title) catch "Local Folder";
     const url = std.heap.page_allocator.dupe(u8, file_url) catch return;
+    if (webViewChromeState(webview)) |state| {
+        state.local_directory_url = url;
+        state.local_directory_title = title;
+        state.local_directory_temp_url = page_url_text;
+    }
 
     if (isActiveWebView(webview)) {
         setCurrentAddress(std.heap.page_allocator.dupeZ(u8, file_url) catch return);
@@ -1299,6 +1373,23 @@ fn appendEscapedHtml(output: *std.ArrayList(u8), text: []const u8) !void {
     }
 }
 
+fn decideNavigationPolicy(_: Id, _: Sel, webview: Id, navigation_action: Id, decision_handler: *NavigationDecisionHandler) callconv(.c) void {
+    const request = msg0(Id, navigation_action, sel("request"));
+    const url = if (request != null) msg0(Id, request, sel("URL")) else null;
+    const absolute = if (url != null) msg0(Id, url, sel("absoluteString")) else null;
+    const raw = if (absolute != null) msg0(?[*:0]const u8, absolute, sel("UTF8String")) else null;
+    const target_url = if (raw) |value| std.mem.span(value) else "";
+
+    if (std.mem.startsWith(u8, target_url, "file://") and localFileUrlIsDirectory(target_url)) {
+        if (tryLoadLocalDirectory(webview, target_url)) {
+            decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
+            return;
+        }
+    }
+
+    decision_handler.invoke(decision_handler, WKNavigationActionPolicyAllow);
+}
+
 fn navigationStarted(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
     _ = target;
     setWebViewLoading(webview, true);
@@ -1341,6 +1432,13 @@ fn updateAddressFromWebView(webview: Id) void {
     const address = std.mem.span(raw);
     if (address.len == 0) return;
 
+    if (localDirectoryStateForActualUrl(webview, address)) |state| {
+        setWebViewInternal(webview, false);
+        if (!isActiveWebView(webview)) return;
+        setCurrentAddress(std.heap.page_allocator.dupeZ(u8, state.local_directory_url) catch return);
+        return;
+    }
+
     if (webViewIsInternal(webview) and std.mem.startsWith(u8, address, "about:")) {
         if (!isActiveWebView(webview)) return;
         setCurrentAddress("nimlo://start");
@@ -1348,6 +1446,7 @@ fn updateAddressFromWebView(webview: Id) void {
     }
 
     setWebViewInternal(webview, false);
+    if (webViewChromeState(webview)) |state| clearLocalDirectoryState(state);
     if (!isActiveWebView(webview)) return;
     setCurrentAddress(address);
 }
@@ -1358,6 +1457,13 @@ fn updateWindowTitleFromWebView(webview: Id) void {
     if (webViewIsInternal(webview)) {
         setCurrentTabTitle("Nimlo");
         setWindowTitle("Nimlo");
+        return;
+    }
+
+    if (localDirectoryStateForWebView(webview)) |state| {
+        setCurrentTabTitle(std.heap.page_allocator.dupeZ(u8, state.local_directory_title) catch "Local Folder");
+        const window_title = std.fmt.allocPrint(std.heap.page_allocator, "{s} - Nimlo", .{state.local_directory_title}) catch return;
+        setWindowTitle(std.heap.page_allocator.dupeZ(u8, window_title) catch return);
         return;
     }
 
@@ -1675,6 +1781,9 @@ fn emitNavigationFromWebView(webview: Id, loading_state: webview_events.LoadingS
     if (webViewIsInternal(webview)) {
         url_text = "nimlo://start";
         title_text = "Nimlo";
+    } else if (localDirectoryStateForWebView(webview)) |state| {
+        url_text = state.local_directory_url;
+        title_text = state.local_directory_title;
     } else {
         if (webViewUrl(webview)) |url| {
             url_text = url;
@@ -1715,6 +1824,8 @@ fn webViewTitle(webview: Id) ?[]const u8 {
 }
 
 fn titleFromWebViewUrl(webview: Id) ?[]const u8 {
+    if (localDirectoryStateForWebView(webview)) |state| return state.local_directory_title;
+
     const url = webViewUrl(webview) orelse return null;
     if (std.mem.eql(u8, url, "nimlo://start")) return "Nimlo";
 
@@ -1753,6 +1864,29 @@ fn webViewChromeState(webview: Id) ?*WebViewChromeState {
     }
 
     return null;
+}
+
+fn localDirectoryStateForWebView(webview: Id) ?*WebViewChromeState {
+    const url = webViewUrl(webview) orelse return null;
+    return localDirectoryStateForActualUrl(webview, url);
+}
+
+fn localDirectoryStateForActualUrl(webview: Id, actual_url: []const u8) ?*WebViewChromeState {
+    const state = webViewChromeState(webview) orelse return null;
+    if (state.local_directory_temp_url.len == 0) return null;
+
+    if (std.mem.eql(u8, actual_url, state.local_directory_temp_url)) {
+        return state;
+    }
+
+    clearLocalDirectoryState(state);
+    return null;
+}
+
+fn clearLocalDirectoryState(state: *WebViewChromeState) void {
+    state.local_directory_url = "";
+    state.local_directory_title = "";
+    state.local_directory_temp_url = "";
 }
 
 fn setWebViewInternal(webview: Id, is_internal: bool) void {

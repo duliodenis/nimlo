@@ -80,6 +80,13 @@ const CachedFavicon = struct {
     image: Id,
 };
 
+const RenderedTabControl = struct {
+    id: u64,
+    button: Id,
+    close_button: Id,
+    seen: bool = false,
+};
+
 var current_address_field: Id = null;
 var current_reload_button: Id = null;
 var current_tab_icon: Id = null;
@@ -94,6 +101,7 @@ var current_window: Id = null;
 var current_tab_snapshots: std.ArrayList(webview_events.TabSnapshot) = .empty;
 var webview_chrome_states: std.ArrayList(WebViewChromeState) = .empty;
 var favicon_cache: std.ArrayList(CachedFavicon) = .empty;
+var rendered_tab_controls: std.ArrayList(RenderedTabControl) = .empty;
 var webcrypto_master_key: [32]u8 = undefined;
 var webcrypto_master_key_initialized = false;
 
@@ -309,8 +317,7 @@ fn renderTitlebarTabs(tabs: []const webview_events.TabSnapshot) !void {
     const target = current_tab_target orelse return;
 
     updateTitlebarContainerLayout();
-    removeAllSubviews(document_view);
-    removePinnedNewTabButton(container);
+    markRenderedTabsUnseen();
 
     var x: CGFloat = 0;
     var active_button: Id = null;
@@ -319,10 +326,11 @@ fn renderTitlebarTabs(tabs: []const webview_events.TabSnapshot) !void {
 
     for (tabs) |tab| {
         const width = tab_slot_width;
-        const button = try addTitlebarTabButton(document_view, target, tab, x, width);
-        _ = try addTitlebarTabCloseButton(document_view, target, tab, x, width);
+        const control = try ensureRenderedTabControl(document_view, target, tab);
+        updateTitlebarTabButton(control.button, tab, x, width);
+        updateTitlebarTabCloseButton(control.close_button, tab, x, width);
         if (tab.is_active) {
-            active_button = button;
+            active_button = control.button;
         }
         x += width + titlebar_new_tab_button_gap;
     }
@@ -334,39 +342,72 @@ fn renderTitlebarTabs(tabs: []const webview_events.TabSnapshot) !void {
             .url = "nimlo://start",
             .is_active = true,
         };
-        active_button = try addTitlebarTabButton(document_view, target, fallback, x, tab_width);
+        const control = try ensureRenderedTabControl(document_view, target, fallback);
+        updateTitlebarTabButton(control.button, fallback, x, tab_width);
+        updateTitlebarTabCloseButton(control.close_button, fallback, x, tab_width);
+        active_button = control.button;
         x += tab_width + titlebar_new_tab_button_gap;
     }
 
+    removeStaleRenderedTabs();
     resizeTabDocument(document_view, titlebarTabAreaWidth(container));
     current_tab_label = active_button;
     current_tab_icon = active_button;
-    _ = try addTitlebarNewTabButton(container, target);
+    _ = try ensureTitlebarNewTabButton(container, target);
 }
 
-fn addTitlebarTabButton(container: Id, target: Id, tab: webview_events.TabSnapshot, x: CGFloat, width: CGFloat) !Id {
-    const frame = CGRect{
-        .origin = .{
-            .x = x,
-            .y = (tab_strip_height - tab_height) / 2,
-        },
-        .size = .{ .width = width, .height = tab_height },
-    };
+fn ensureRenderedTabControl(container: Id, target: Id, tab: webview_events.TabSnapshot) !*RenderedTabControl {
+    for (rendered_tab_controls.items) |*control| {
+        if (control.id == tab.id) {
+            control.seen = true;
+            return control;
+        }
+    }
+
+    const button = try addTitlebarTabButton(container, target, tab);
+    const close_button = try addTitlebarTabCloseButton(container, target, tab);
+    try rendered_tab_controls.append(std.heap.page_allocator, .{
+        .id = tab.id,
+        .button = button,
+        .close_button = close_button,
+        .seen = true,
+    });
+    return &rendered_tab_controls.items[rendered_tab_controls.items.len - 1];
+}
+
+fn markRenderedTabsUnseen() void {
+    for (rendered_tab_controls.items) |*control| {
+        control.seen = false;
+    }
+}
+
+fn removeStaleRenderedTabs() void {
+    var index = rendered_tab_controls.items.len;
+    while (index > 0) {
+        index -= 1;
+        const control = rendered_tab_controls.items[index];
+        if (control.seen) continue;
+
+        msg0(void, control.close_button, sel("removeFromSuperview"));
+        msg0(void, control.button, sel("removeFromSuperview"));
+        _ = rendered_tab_controls.orderedRemove(index);
+    }
+}
+
+fn addTitlebarTabButton(container: Id, target: Id, tab: webview_events.TabSnapshot) !Id {
     const button = msg1(
         Id,
         msg0(Id, cls("NSButton"), sel("alloc")),
         sel("initWithFrame:"),
-        frame,
+        CGRect{
+            .origin = .{ .x = 0, .y = (tab_strip_height - tab_height) / 2 },
+            .size = .{ .width = tab_width, .height = tab_height },
+        },
     );
     if (button == null) return error.MacOSTabButtonUnavailable;
 
-    const title = tabDisplayTitle(tab.title, width) catch "Nimlo";
-    msg1(void, button, sel("setTitle:"), nsString(title));
-    msg1(void, button, sel("setToolTip:"), nsString(std.heap.page_allocator.dupeZ(u8, tab.title) catch "Nimlo"));
-    msg1(void, button, sel("setImage:"), tabImage(tab));
     msg1(void, button, sel("setImagePosition:"), NSImageLeft);
     msg1(void, button, sel("setAutoresizingMask:"), NSViewTopPinned);
-    msg1(void, button, sel("setBordered:"), tab.is_active);
     msg1(void, button, sel("setButtonType:"), NSButtonTypeMomentaryChange);
     msg1(void, button, sel("setFont:"), msg1(Id, cls("NSFont"), sel("systemFontOfSize:"), @as(CGFloat, 13)));
     msg1(void, button, sel("setLineBreakMode:"), NSLineBreakByTruncatingTail);
@@ -382,25 +423,34 @@ fn addTitlebarTabButton(container: Id, target: Id, tab: webview_events.TabSnapsh
     return button;
 }
 
+fn updateTitlebarTabButton(button: Id, tab: webview_events.TabSnapshot, x: CGFloat, width: CGFloat) void {
+    const frame = CGRect{
+        .origin = .{ .x = x, .y = (tab_strip_height - tab_height) / 2 },
+        .size = .{ .width = width, .height = tab_height },
+    };
+
+    const title = tabDisplayTitle(tab.title, width) catch "Nimlo";
+    msg1(void, button, sel("setFrame:"), frame);
+    msg1(void, button, sel("setTitle:"), nsString(title));
+    msg1(void, button, sel("setToolTip:"), nsString(std.heap.page_allocator.dupeZ(u8, tab.title) catch "Nimlo"));
+    msg1(void, button, sel("setImage:"), tabImage(tab));
+    msg1(void, button, sel("setBordered:"), tab.is_active);
+    msg1(void, button, sel("setTag:"), @as(isize, @intCast(tab.id)));
+}
+
 fn addTitlebarTabCloseButton(
     container: Id,
     target: Id,
     tab: webview_events.TabSnapshot,
-    x: CGFloat,
-    width: CGFloat,
 ) !Id {
-    const frame = CGRect{
-        .origin = .{
-            .x = x + width - tab_close_button_size - tab_close_button_margin,
-            .y = (tab_strip_height - tab_close_button_size) / 2,
-        },
-        .size = .{ .width = tab_close_button_size, .height = tab_close_button_size },
-    };
     const button = msg1(
         Id,
         msg0(Id, cls("NSButton"), sel("alloc")),
         sel("initWithFrame:"),
-        frame,
+        CGRect{
+            .origin = .{ .x = 0, .y = (tab_strip_height - tab_close_button_size) / 2 },
+            .size = .{ .width = tab_close_button_size, .height = tab_close_button_size },
+        },
     );
     if (button == null) return error.MacOSTabCloseButtonUnavailable;
 
@@ -421,6 +471,19 @@ fn addTitlebarTabCloseButton(
     msg1(void, button, sel("setAction:"), sel("closeTab:"));
     msg1(void, container, sel("addSubview:"), button);
     return button;
+}
+
+fn updateTitlebarTabCloseButton(button: Id, tab: webview_events.TabSnapshot, x: CGFloat, width: CGFloat) void {
+    const frame = CGRect{
+        .origin = .{
+            .x = x + width - tab_close_button_size - tab_close_button_margin,
+            .y = (tab_strip_height - tab_close_button_size) / 2,
+        },
+        .size = .{ .width = tab_close_button_size, .height = tab_close_button_size },
+    };
+
+    msg1(void, button, sel("setFrame:"), frame);
+    msg1(void, button, sel("setTag:"), @as(isize, @intCast(tab.id)));
 }
 
 fn tabDisplayTitle(title: []const u8, width: CGFloat) ![:0]const u8 {
@@ -453,7 +516,12 @@ fn tabDisplayTitle(title: []const u8, width: CGFloat) ![:0]const u8 {
     return try output.toOwnedSliceSentinel(std.heap.page_allocator, 0);
 }
 
-fn addTitlebarNewTabButton(container: Id, target: Id) !Id {
+fn ensureTitlebarNewTabButton(container: Id, target: Id) !Id {
+    if (current_tab_new_button) |button| {
+        updateTitlebarNewTabButtonFrame(container, button);
+        return button;
+    }
+
     const frame = CGRect{
         .origin = .{
             .x = titlebarTabAreaWidth(container) + titlebar_new_tab_button_gap,
@@ -487,6 +555,16 @@ fn addTitlebarNewTabButton(container: Id, target: Id) !Id {
     msg1(void, container, sel("addSubview:"), button);
     current_tab_new_button = button;
     return button;
+}
+
+fn updateTitlebarNewTabButtonFrame(container: Id, button: Id) void {
+    msg1(void, button, sel("setFrame:"), CGRect{
+        .origin = .{
+            .x = titlebarTabAreaWidth(container) + titlebar_new_tab_button_gap,
+            .y = (tab_strip_height - titlebar_new_tab_button_size) / 2,
+        },
+        .size = .{ .width = titlebar_new_tab_button_size, .height = titlebar_new_tab_button_size },
+    });
 }
 
 fn titlebarTabAreaWidth(container: Id) CGFloat {
@@ -536,25 +614,10 @@ fn updateTitlebarContainerLayout() void {
     }
 }
 
-fn removePinnedNewTabButton(container: Id) void {
-    _ = container;
-    if (current_tab_new_button) |button| {
-        msg0(void, button, sel("removeFromSuperview"));
-        current_tab_new_button = null;
-    }
-}
-
 fn handleTabsChanged(_: *anyopaque, tabs: []const webview_events.TabSnapshot) void {
     current_tab_snapshots.clearRetainingCapacity();
     current_tab_snapshots.appendSlice(std.heap.page_allocator, tabs) catch return;
     renderTitlebarTabs(tabs) catch return;
-}
-
-fn removeAllSubviews(view: Id) void {
-    const subviews = msg0(Id, view, sel("subviews"));
-    if (subviews != null) {
-        msg1(void, subviews, sel("makeObjectsPerformSelector:"), sel("removeFromSuperview"));
-    }
 }
 
 fn tabImage(tab: webview_events.TabSnapshot) Id {
@@ -1015,21 +1078,18 @@ fn updateFaviconFromWebView(webview: Id) ?[:0]const u8 {
         return "";
     }
 
-    if (!isActiveWebView(webview)) return rootFaviconUrl(webview);
-
-    const favicon_url = declaredFaviconUrl(webview) orelse rootFaviconUrl(webview) orelse {
-        setCurrentTabIcon(defaultFavicon());
-        return null;
-    };
-    const ns_url = msg1(Id, cls("NSURL"), sel("URLWithString:"), nsString(favicon_url));
-    if (ns_url == null) {
-        setCurrentTabIcon(defaultFavicon());
+    const favicon_url = if (isActiveWebView(webview))
+        declaredFaviconUrl(webview) orelse rootFaviconUrl(webview)
+    else
+        rootFaviconUrl(webview);
+    if (favicon_url == null) {
+        if (isActiveWebView(webview)) setCurrentTabIcon(defaultFavicon());
         return null;
     }
 
-    const image = msg1(Id, msg0(Id, cls("NSImage"), sel("alloc")), sel("initWithContentsOfURL:"), ns_url);
-    if (image) |value| rememberFaviconImage(favicon_url, value);
-    setCurrentTabIcon(if (image) |value| value else defaultFavicon());
+    const image = loadCachedFaviconImage(favicon_url.?);
+    if (isActiveWebView(webview)) setCurrentTabIcon(if (image) |value| value else defaultFavicon());
+    refreshRenderedTabImagesForFavicon(favicon_url.?);
     return favicon_url;
 }
 
@@ -1049,6 +1109,32 @@ fn rememberFaviconImage(url: []const u8, image: Id) void {
         .url = stored_url,
         .image = image,
     }) catch return;
+}
+
+fn loadCachedFaviconImage(url: []const u8) ?Id {
+    if (cachedFaviconImage(url)) |image| return image;
+
+    const ns_url = msg1(Id, cls("NSURL"), sel("URLWithString:"), nsString(std.heap.page_allocator.dupeZ(u8, url) catch return null));
+    if (ns_url == null) return null;
+
+    const image = msg1(Id, msg0(Id, cls("NSImage"), sel("alloc")), sel("initWithContentsOfURL:"), ns_url);
+    if (image) |value| rememberFaviconImage(url, value);
+    return image;
+}
+
+fn refreshRenderedTabImagesForFavicon(url: []const u8) void {
+    const image = cachedFaviconImage(url) orelse return;
+
+    for (current_tab_snapshots.items) |tab| {
+        if (!std.mem.eql(u8, tab.favicon_url, url)) continue;
+
+        for (rendered_tab_controls.items) |control| {
+            if (control.id == tab.id) {
+                msg1(void, control.button, sel("setImage:"), sizedTabImage(image));
+                break;
+            }
+        }
+    }
 }
 
 fn declaredFaviconUrl(webview: Id) ?[:0]const u8 {

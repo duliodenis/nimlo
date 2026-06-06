@@ -1,539 +1,784 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Nimlo - Browse lightly</title>
-  <meta name="description" content="Nimlo is an open-source browser prototype built in Zig to give people a lighter, private, user-controlled choice for the web.">
-  <style>
-    :root {
-      color-scheme: light;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      color: #172018;
-      background: #f6f7f2;
-      font-synthesis-weight: none;
-      text-rendering: optimizeLegibility;
-    }
-
-    * {
-      box-sizing: border-box;
-    }
-
-    body {
-      margin: 0;
-      background: #f6f7f2;
-      color: #172018;
-    }
-
-    a {
-      color: inherit;
-      text-decoration: none;
-    }
-
-    .hero {
-      min-height: 92vh;
-      display: grid;
-      grid-template-rows: auto 1fr;
-      background-image:
-        linear-gradient(90deg, rgba(13, 23, 15, 0.72), rgba(13, 23, 15, 0.38) 48%, rgba(13, 23, 15, 0.08)),
-        url("assets/nimlo-background-wallpaper-sunny.jpg");
-      background-size: cover;
-      background-position: center;
-      color: #fffdf4;
-    }
-
-    .nav {
-      width: min(100%, 1180px);
-      margin: 0 auto;
-      padding: 22px 24px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 24px;
-    }
-
-    .brand {
-      display: inline-flex;
-      align-items: center;
-      gap: 12px;
-      font-weight: 760;
-      font-size: 1.04rem;
-    }
-
-    .brand img {
-      width: 34px;
-      height: 34px;
-      border-radius: 8px;
-      object-fit: cover;
-      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
-    }
-
-    .nav-links {
-      display: flex;
-      align-items: center;
-      gap: 18px;
-      color: rgba(255, 253, 244, 0.86);
-      font-size: 0.94rem;
-      font-weight: 560;
-    }
-
-    .nav-links a:hover {
-      color: #ffffff;
-    }
-
-    .hero-inner {
-      width: min(100%, 1180px);
-      margin: 0 auto;
-      padding: 68px 24px 76px;
-      display: grid;
-      align-items: center;
-    }
-
-    .hero-copy {
-      width: min(100%, 690px);
-    }
-
-    .status {
-      display: inline-flex;
-      align-items: center;
-      min-height: 34px;
-      padding: 0 12px;
-      border: 1px solid rgba(255, 253, 244, 0.28);
-      border-radius: 999px;
-      background: rgba(255, 253, 244, 0.12);
-      color: rgba(255, 253, 244, 0.9);
-      font-size: 0.88rem;
-      font-weight: 650;
-      backdrop-filter: blur(10px);
-    }
-
-    h1 {
-      margin: 24px 0 0;
-      max-width: 9ch;
-      font-size: clamp(4.8rem, 13vw, 9rem);
-      line-height: 0.9;
-      font-weight: 820;
-      letter-spacing: 0;
-    }
-
-    .word-rotator {
-      position: relative;
-      display: block;
-      min-width: 4.65em;
-      height: 1.04em;
-      overflow: hidden;
-    }
-
-    .word-rotator span {
-      position: absolute;
-      inset: 0 auto auto 0;
-      opacity: 0;
-      padding-bottom: 0.08em;
-      transform: translateY(0.3em);
-      animation: rotateHeroWord 9s cubic-bezier(0.16, 1, 0.3, 1) infinite;
-      will-change: opacity, transform;
-    }
-
-    .word-rotator span:nth-child(1) {
-      animation-delay: 0s;
-    }
-
-    .word-rotator span:nth-child(2) {
-      animation-delay: 3s;
-    }
-
-    .word-rotator span:nth-child(3) {
-      animation-delay: 6s;
-    }
-
-    @keyframes rotateHeroWord {
-      0% {
-        opacity: 0;
-        transform: translateY(0.3em);
-      }
-      7%,
-      28% {
-        opacity: 1;
-        transform: translateY(0);
-      }
-      35%,
-      100% {
-        opacity: 0;
-        transform: translateY(-0.3em);
-      }
-    }
-
-    .lead {
-      margin: 28px 0 0;
-      width: min(100%, 620px);
-      color: rgba(255, 253, 244, 0.9);
-      font-size: clamp(1.15rem, 2.1vw, 1.55rem);
-      line-height: 1.42;
-      font-weight: 520;
-    }
-
-    .actions {
-      margin-top: 36px;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 12px;
-    }
-
-    .button {
-      min-height: 46px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 9px;
-      padding: 0 18px;
-      border-radius: 8px;
-      font-weight: 700;
-      font-size: 0.96rem;
-    }
-
-    .button.primary {
-      background: #fffdf4;
-      color: #172018;
-      box-shadow: 0 18px 34px rgba(0, 0, 0, 0.22);
-    }
-
-    .button.secondary {
-      border: 1px solid rgba(255, 253, 244, 0.34);
-      background: rgba(255, 253, 244, 0.11);
-      color: #fffdf4;
-      backdrop-filter: blur(10px);
-    }
-
-    .next-hint {
-      min-height: 8vh;
-      background: #f6f7f2;
-    }
-
-    .section {
-      padding: 84px 24px;
-    }
-
-    .section-inner {
-      width: min(100%, 1100px);
-      margin: 0 auto;
-    }
-
-    .split {
-      display: grid;
-      grid-template-columns: minmax(0, 0.92fr) minmax(280px, 1.08fr);
-      align-items: center;
-      gap: 58px;
-    }
-
-    h2 {
-      margin: 0;
-      color: #172018;
-      font-size: clamp(2.2rem, 5vw, 4.4rem);
-      line-height: 0.98;
-      font-weight: 790;
-      letter-spacing: 0;
-    }
-
-    .section p {
-      margin: 22px 0 0;
-      color: #4b5549;
-      font-size: 1.08rem;
-      line-height: 1.68;
-    }
-
-    .mockup {
-      width: 100%;
-      border-radius: 8px;
-      display: block;
-      box-shadow: 0 28px 70px rgba(23, 32, 24, 0.18);
-    }
-
-    .principles {
-      background: #fffdf4;
-      border-top: 1px solid rgba(74, 86, 67, 0.14);
-      border-bottom: 1px solid rgba(74, 86, 67, 0.14);
-    }
-
-    .grid {
-      margin-top: 42px;
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 18px;
-    }
-
-    .item {
-      min-height: 190px;
-      padding: 24px;
-      border: 1px solid rgba(74, 86, 67, 0.16);
-      border-radius: 8px;
-      background: #ffffff;
-    }
-
-    .reveal {
-      opacity: 0;
-      transform: translateY(22px);
-      transition:
-        opacity 620ms cubic-bezier(0.16, 1, 0.3, 1),
-        transform 620ms cubic-bezier(0.16, 1, 0.3, 1);
-      transition-delay: var(--reveal-delay, 0ms);
-      will-change: opacity, transform;
-    }
-
-    .reveal.visible {
-      opacity: 1;
-      transform: translateY(0);
-    }
-
-    .item h3 {
-      margin: 0;
-      color: #172018;
-      font-size: 1.12rem;
-      line-height: 1.24;
-    }
-
-    .item p {
-      margin-top: 14px;
-      font-size: 0.98rem;
-      line-height: 1.58;
-    }
-
-    .status-band {
-      background: #18231a;
-      color: #fffdf4;
-    }
-
-    .status-band h2 {
-      color: #fffdf4;
-    }
-
-    .status-band p {
-      color: rgba(255, 253, 244, 0.76);
-    }
-
-    .checks {
-      margin: 36px 0 0;
-      padding: 0;
-      list-style: none;
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
-    }
-
-    .checks li {
-      min-height: 48px;
-      display: flex;
-      align-items: center;
-      gap: 11px;
-      padding: 13px 14px;
-      border-radius: 8px;
-      background: rgba(255, 253, 244, 0.08);
-      color: rgba(255, 253, 244, 0.9);
-      font-weight: 620;
-    }
-
-    @media (prefers-reduced-motion: reduce) {
-      .reveal {
-        opacity: 1;
-        transform: none;
-        transition: none;
-      }
-
-      .word-rotator span {
-        animation: none;
-        transform: none;
-      }
-
-      .word-rotator span:first-child {
-        opacity: 1;
-      }
-    }
-
-    .check {
-      width: 18px;
-      height: 18px;
-      flex: 0 0 auto;
-      color: #c6e7a3;
-    }
-
-    footer {
-      padding: 34px 24px;
-      background: #f6f7f2;
-      color: #5c6658;
-      border-top: 1px solid rgba(74, 86, 67, 0.12);
-    }
-
-    .footer-inner {
-      width: min(100%, 1100px);
-      margin: 0 auto;
-      display: flex;
-      justify-content: space-between;
-      gap: 22px;
-      font-size: 0.95rem;
-    }
-
-    .footer-inner a {
-      font-weight: 700;
-      color: #172018;
-    }
-
-    @media (max-width: 820px) {
-      .hero {
-        min-height: 88vh;
-        background-image:
-          linear-gradient(180deg, rgba(13, 23, 15, 0.76), rgba(13, 23, 15, 0.46)),
-          url("assets/nimlo-background-wallpaper-sunny.jpg");
-      }
-
-      .nav {
-        align-items: flex-start;
-      }
-
-      .nav-links {
-        gap: 12px;
-        font-size: 0.88rem;
-      }
-
-      .hero-inner {
-        padding-top: 48px;
-      }
-
-      .split,
-      .grid,
-      .checks {
-        grid-template-columns: 1fr;
-      }
-
-      .section {
-        padding: 64px 20px;
-      }
-
-      .footer-inner {
-        flex-direction: column;
-      }
-    }
-  </style>
-</head>
-<body>
-  <header class="hero">
-    <nav class="nav" aria-label="Primary">
-      <a class="brand" href="#">
-        <img src="assets/nimlo-icon.jpg" alt="">
-        <span>Nimlo</span>
-      </a>
-      <div class="nav-links">
-        <a href="#why">Why</a>
-        <a href="#status">Status</a>
-        <a href="https://github.com/duliodenis/nimlo">GitHub</a>
-      </div>
-    </nav>
-
-    <div class="hero-inner">
-      <div class="hero-copy">
-        <span class="status">Open-source browser prototype</span>
-        <h1 aria-label="Browse lightly. Browse privately. Browse quickly.">
-          Browse
-          <span class="word-rotator" aria-hidden="true">
-            <span>lightly.</span>
-            <span>privately.</span>
-            <span>quickly.</span>
-          </span>
-        </h1>
-        <p class="lead">
-          Nimlo exists to give the world a choice: a browser shaped around speed, privacy,
-          local control, and the simple pleasure of exploring the web without corporate clutter.
-        </p>
-        <div class="actions">
-          <a class="button primary" href="https://github.com/duliodenis/nimlo">View on GitHub</a>
-          <a class="button secondary" href="#status">See prototype status</a>
-        </div>
-      </div>
-    </div>
-  </header>
-
-  <div class="next-hint" aria-hidden="true"></div>
-
-  <main>
-    <section id="why" class="section">
-      <div class="section-inner split">
-        <div>
-          <h2>The web deserves more than one shape.</h2>
-          <p>
-            Modern browsers are powerful, but they have also become enormous platforms for ads,
-            accounts, tracking, growth systems, and features many people never asked for.
-          </p>
-          <p>
-            Nimlo starts small on purpose: a quiet browser shell built in Zig, using the system
-            WebView today while growing user-owned browser features around it over time.
-          </p>
-        </div>
-        <img class="mockup" src="assets/nimlo-mockup.jpg" alt="Nimlo browser prototype mockup">
-      </div>
-    </section>
-
-    <section class="section principles">
-      <div class="section-inner">
-        <h2>Built for user control.</h2>
-        <div class="grid">
-          <article class="item reveal" style="--reveal-delay: 0ms">
-            <h3>Private by default</h3>
-            <p>No telemetry, no forced account, and nonpersistent browsing storage in the current prototype.</p>
-          </article>
-          <article class="item reveal" style="--reveal-delay: 90ms">
-            <h3>Small enough to understand</h3>
-            <p>The first goal is a readable browser shell with clear boundaries between app, tabs, WebView, and storage.</p>
-          </article>
-          <article class="item reveal" style="--reveal-delay: 180ms">
-            <h3>Useful before it is huge</h3>
-            <p>Nimlo does not try to replace the whole browser engine first. It ships a usable shell and deepens from there.</p>
-          </article>
-        </div>
-      </div>
-    </section>
-
-    <section id="status" class="section status-band">
-      <div class="section-inner">
-        <h2>Prototype status.</h2>
-        <p>
-          Nimlo is not a production browser yet. The macOS prototype currently focuses on a fast,
-          minimal shell with reliable tab and WebView lifecycle behavior.
-        </p>
-        <ul class="checks">
-          <li class="reveal" style="--reveal-delay: 0ms"><svg class="check" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12 4 4 10-10" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>Native macOS window chrome</li>
-          <li class="reveal" style="--reveal-delay: 70ms"><svg class="check" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12 4 4 10-10" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>Independent WebView per tab</li>
-          <li class="reveal" style="--reveal-delay: 140ms"><svg class="check" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12 4 4 10-10" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>Address bar and navigation controls</li>
-          <li class="reveal" style="--reveal-delay: 210ms"><svg class="check" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12 4 4 10-10" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>New, close, and switch tabs</li>
-          <li class="reveal" style="--reveal-delay: 280ms"><svg class="check" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12 4 4 10-10" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>Nonpersistent WebKit data store</li>
-          <li class="reveal" style="--reveal-delay: 350ms"><svg class="check" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12 4 4 10-10" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>No ads, telemetry, or accounts</li>
-        </ul>
-      </div>
-    </section>
-  </main>
-
-  <footer>
-    <div class="footer-inner">
-      <span>Nimlo is experimental open-source software.</span>
-      <span><a href="https://github.com/duliodenis/nimlo">GitHub</a></span>
-    </div>
-  </footer>
-  <script>
-    const revealItems = document.querySelectorAll(".reveal");
-
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      revealItems.forEach((item) => item.classList.add("visible"));
-    } else {
-      const observer = new IntersectionObserver((entries) => {
-        entries.forEach((entry) => {
-          if (!entry.isIntersecting) return;
-          entry.target.classList.add("visible");
-          observer.unobserve(entry.target);
-        });
-      }, {
-        threshold: 0.18,
-        rootMargin: "0px 0px -8% 0px"
-      });
-
-      revealItems.forEach((item) => observer.observe(item));
-    }
-  </script>
-</body>
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Nimlo - Browse lightly</title>
+        <meta
+            name="description"
+            content="Nimlo is an open-source browser prototype built in Zig to give people a lighter, private, user-controlled choice for the web."
+        />
+        <style>
+            :root {
+                color-scheme: light;
+                font-family:
+                    Inter,
+                    ui-sans-serif,
+                    system-ui,
+                    -apple-system,
+                    BlinkMacSystemFont,
+                    "Segoe UI",
+                    sans-serif;
+                color: #172018;
+                background: #f6f7f2;
+                font-synthesis-weight: none;
+                text-rendering: optimizeLegibility;
+            }
+
+            * {
+                box-sizing: border-box;
+            }
+
+            body {
+                margin: 0;
+                background: #f6f7f2;
+                color: #172018;
+            }
+
+            a {
+                color: inherit;
+                text-decoration: none;
+            }
+
+            .hero {
+                min-height: 92vh;
+                display: grid;
+                grid-template-rows: auto 1fr;
+                background-image:
+                    linear-gradient(
+                        90deg,
+                        rgba(13, 23, 15, 0.72),
+                        rgba(13, 23, 15, 0.38) 48%,
+                        rgba(13, 23, 15, 0.08)
+                    ),
+                    url("assets/nimlo-background-wallpaper-sunny.jpg");
+                background-size: cover;
+                background-position: center;
+                color: #fffdf4;
+            }
+
+            .nav {
+                width: min(100%, 1180px);
+                margin: 0 auto;
+                padding: 22px 24px;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 24px;
+            }
+
+            .brand {
+                display: inline-flex;
+                align-items: center;
+                gap: 12px;
+                font-weight: 760;
+                font-size: 1.04rem;
+            }
+
+            .brand img {
+                width: 34px;
+                height: 34px;
+                border-radius: 8px;
+                object-fit: cover;
+                box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+            }
+
+            .nav-links {
+                display: flex;
+                align-items: center;
+                gap: 18px;
+                color: rgba(255, 253, 244, 0.86);
+                font-size: 0.94rem;
+                font-weight: 560;
+            }
+
+            .nav-links a:hover {
+                color: #ffffff;
+            }
+
+            .hero-inner {
+                width: min(100%, 1180px);
+                margin: 0 auto;
+                padding: 68px 24px 76px;
+                display: grid;
+                align-items: center;
+            }
+
+            .hero-copy {
+                width: min(100%, 690px);
+            }
+
+            .status {
+                display: inline-flex;
+                align-items: center;
+                min-height: 34px;
+                padding: 0 12px;
+                border: 1px solid rgba(255, 253, 244, 0.28);
+                border-radius: 999px;
+                background: rgba(255, 253, 244, 0.12);
+                color: rgba(255, 253, 244, 0.9);
+                font-size: 0.88rem;
+                font-weight: 650;
+                backdrop-filter: blur(10px);
+            }
+
+            h1 {
+                margin: 24px 0 0;
+                max-width: 9ch;
+                font-size: clamp(4.8rem, 13vw, 9rem);
+                line-height: 0.9;
+                font-weight: 820;
+                letter-spacing: 0;
+            }
+
+            .word-rotator {
+                position: relative;
+                display: block;
+                min-width: 4.65em;
+                height: 1.04em;
+                overflow: hidden;
+            }
+
+            .word-rotator span {
+                position: absolute;
+                inset: 0 auto auto 0;
+                opacity: 0;
+                padding-bottom: 0.08em;
+                transform: translateY(0.3em);
+                animation: rotateHeroWord 9s cubic-bezier(0.16, 1, 0.3, 1)
+                    infinite;
+                will-change: opacity, transform;
+            }
+
+            .word-rotator span:nth-child(1) {
+                animation-delay: 0s;
+            }
+
+            .word-rotator span:nth-child(2) {
+                animation-delay: 3s;
+            }
+
+            .word-rotator span:nth-child(3) {
+                animation-delay: 6s;
+            }
+
+            @keyframes rotateHeroWord {
+                0% {
+                    opacity: 0;
+                    transform: translateY(0.3em);
+                }
+                7%,
+                28% {
+                    opacity: 1;
+                    transform: translateY(0);
+                }
+                35%,
+                100% {
+                    opacity: 0;
+                    transform: translateY(-0.3em);
+                }
+            }
+
+            .lead {
+                margin: 28px 0 0;
+                width: min(100%, 620px);
+                color: rgba(255, 253, 244, 0.9);
+                font-size: clamp(1.15rem, 2.1vw, 1.55rem);
+                line-height: 1.42;
+                font-weight: 520;
+            }
+
+            .actions {
+                margin-top: 36px;
+                display: flex;
+                flex-wrap: wrap;
+                gap: 12px;
+            }
+
+            .button {
+                min-height: 46px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: 9px;
+                padding: 0 18px;
+                border-radius: 8px;
+                font-weight: 700;
+                font-size: 0.96rem;
+            }
+
+            .button.primary {
+                background: #fffdf4;
+                color: #172018;
+                box-shadow: 0 18px 34px rgba(0, 0, 0, 0.22);
+            }
+
+            .button.secondary {
+                border: 1px solid rgba(255, 253, 244, 0.34);
+                background: rgba(255, 253, 244, 0.11);
+                color: #fffdf4;
+                backdrop-filter: blur(10px);
+            }
+
+            .button.dark {
+                background: #172018;
+                color: #fffdf4;
+                box-shadow: 0 16px 30px rgba(23, 32, 24, 0.18);
+            }
+
+            .button.outline {
+                border: 1px solid rgba(23, 32, 24, 0.22);
+                color: #172018;
+                background: rgba(255, 253, 244, 0.64);
+            }
+
+            .next-hint {
+                min-height: 8vh;
+                background: #f6f7f2;
+            }
+
+            .section {
+                padding: 84px 24px;
+            }
+
+            .section-inner {
+                width: min(100%, 1100px);
+                margin: 0 auto;
+            }
+
+            .split {
+                display: grid;
+                grid-template-columns: minmax(0, 0.92fr) minmax(280px, 1.08fr);
+                align-items: center;
+                gap: 58px;
+            }
+
+            h2 {
+                margin: 0;
+                color: #172018;
+                font-size: clamp(2.2rem, 5vw, 4.4rem);
+                line-height: 0.98;
+                font-weight: 790;
+                letter-spacing: 0;
+            }
+
+            .section p {
+                margin: 22px 0 0;
+                color: #4b5549;
+                font-size: 1.08rem;
+                line-height: 1.68;
+            }
+
+            .download {
+                background: #e9efe3;
+                border-bottom: 1px solid rgba(74, 86, 67, 0.14);
+            }
+
+            .download-inner {
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) auto;
+                gap: 28px;
+                align-items: center;
+            }
+
+            .download-kicker {
+                margin: 0 0 12px;
+                color: #586451;
+                font-size: 0.82rem;
+                font-weight: 760;
+                letter-spacing: 0;
+                text-transform: uppercase;
+            }
+
+            .download h2 {
+                font-size: clamp(2rem, 4.2vw, 3.5rem);
+            }
+
+            .download-actions {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 12px;
+                justify-content: flex-end;
+            }
+
+            .download-note {
+                margin-top: 14px;
+                color: #5c6658;
+                font-size: 0.95rem;
+                line-height: 1.55;
+            }
+
+            .mockup {
+                width: 100%;
+                border-radius: 8px;
+                display: block;
+                box-shadow: 0 28px 70px rgba(23, 32, 24, 0.18);
+            }
+
+            .principles {
+                background: #fffdf4;
+                border-top: 1px solid rgba(74, 86, 67, 0.14);
+                border-bottom: 1px solid rgba(74, 86, 67, 0.14);
+            }
+
+            .grid {
+                margin-top: 42px;
+                display: grid;
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+                gap: 18px;
+            }
+
+            .item {
+                min-height: 190px;
+                padding: 24px;
+                border: 1px solid rgba(74, 86, 67, 0.16);
+                border-radius: 8px;
+                background: #ffffff;
+            }
+
+            .reveal {
+                opacity: 0;
+                transform: translateY(22px);
+                transition:
+                    opacity 620ms cubic-bezier(0.16, 1, 0.3, 1),
+                    transform 620ms cubic-bezier(0.16, 1, 0.3, 1);
+                transition-delay: var(--reveal-delay, 0ms);
+                will-change: opacity, transform;
+            }
+
+            .reveal.visible {
+                opacity: 1;
+                transform: translateY(0);
+            }
+
+            .item h3 {
+                margin: 0;
+                color: #172018;
+                font-size: 1.12rem;
+                line-height: 1.24;
+            }
+
+            .item p {
+                margin-top: 14px;
+                font-size: 0.98rem;
+                line-height: 1.58;
+            }
+
+            .status-band {
+                background: #18231a;
+                color: #fffdf4;
+            }
+
+            .status-band h2 {
+                color: #fffdf4;
+            }
+
+            .status-band p {
+                color: rgba(255, 253, 244, 0.76);
+            }
+
+            .checks {
+                margin: 36px 0 0;
+                padding: 0;
+                list-style: none;
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 12px;
+            }
+
+            .checks li {
+                min-height: 48px;
+                display: flex;
+                align-items: center;
+                gap: 11px;
+                padding: 13px 14px;
+                border-radius: 8px;
+                background: rgba(255, 253, 244, 0.08);
+                color: rgba(255, 253, 244, 0.9);
+                font-weight: 620;
+            }
+
+            @media (prefers-reduced-motion: reduce) {
+                .reveal {
+                    opacity: 1;
+                    transform: none;
+                    transition: none;
+                }
+
+                .word-rotator span {
+                    animation: none;
+                    transform: none;
+                }
+
+                .word-rotator span:first-child {
+                    opacity: 1;
+                }
+            }
+
+            .check {
+                width: 18px;
+                height: 18px;
+                flex: 0 0 auto;
+                color: #c6e7a3;
+            }
+
+            footer {
+                padding: 34px 24px;
+                background: #f6f7f2;
+                color: #5c6658;
+                border-top: 1px solid rgba(74, 86, 67, 0.12);
+            }
+
+            .footer-inner {
+                width: min(100%, 1100px);
+                margin: 0 auto;
+                display: flex;
+                justify-content: space-between;
+                gap: 22px;
+                font-size: 0.95rem;
+            }
+
+            .footer-inner a {
+                font-weight: 700;
+                color: #172018;
+            }
+
+            @media (max-width: 820px) {
+                .hero {
+                    min-height: 88vh;
+                    background-image:
+                        linear-gradient(
+                            180deg,
+                            rgba(13, 23, 15, 0.76),
+                            rgba(13, 23, 15, 0.46)
+                        ),
+                        url("assets/nimlo-background-wallpaper-sunny.jpg");
+                }
+
+                .nav {
+                    align-items: flex-start;
+                }
+
+                .nav-links {
+                    gap: 12px;
+                    font-size: 0.88rem;
+                }
+
+                .hero-inner {
+                    padding-top: 48px;
+                }
+
+                .split,
+                .download-inner,
+                .grid,
+                .checks {
+                    grid-template-columns: 1fr;
+                }
+
+                .download-actions {
+                    justify-content: flex-start;
+                }
+
+                .section {
+                    padding: 64px 20px;
+                }
+
+                .footer-inner {
+                    flex-direction: column;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <header class="hero">
+            <nav class="nav" aria-label="Primary">
+                <a class="brand" href="#">
+                    <img src="assets/nimlo-icon.jpg" alt="" />
+                    <span>Nimlo</span>
+                </a>
+                <div class="nav-links">
+                    <a href="#why">Why</a>
+                    <a href="#status">Status</a>
+                    <a href="https://github.com/duliodenis/nimlo">GitHub</a>
+                    <a href="#download">Download</a>
+                </div>
+            </nav>
+
+            <div class="hero-inner">
+                <div class="hero-copy">
+                    <span class="status">Open-source browser prototype</span>
+                    <h1
+                        aria-label="Browse lightly. Browse privately. Browse quickly."
+                    >
+                        Browse
+                        <span class="word-rotator" aria-hidden="true">
+                            <span>lightly.</span>
+                            <span>privately.</span>
+                            <span>quickly.</span>
+                        </span>
+                    </h1>
+                    <p class="lead">
+                        Nimlo exists to give the world a choice: a browser
+                        shaped around speed, privacy, local control, and the
+                        simple pleasure of exploring the web without corporate
+                        clutter.
+                    </p>
+                    <div class="actions">
+                        <a
+                            class="button primary"
+                            href="https://github.com/duliodenis/nimlo/releases/download/0.1.0/Nimlo-0.1.0-macos-arm64.dmg"
+                            >Download for Mac</a
+                        >
+                        <a class="button secondary" href="#status"
+                            >See prototype status</a
+                        >
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <div class="next-hint" aria-hidden="true"></div>
+
+        <main>
+            <section id="download" class="section download">
+                <div class="section-inner download-inner">
+                    <div>
+                        <p class="download-kicker">
+                            Nimlo 0.1.0 for Apple Silicon
+                        </p>
+                        <h2>Download the first macOS prototype.</h2>
+                        <p>
+                            Try the current Nimlo app bundle as a DMG for Apple
+                            Silicon Macs. This is an experimental release, not a
+                            production browser replacement.
+                        </p>
+                        <p class="download-note">
+                            Requires macOS 13 or newer. Built for arm64.
+                        </p>
+                    </div>
+                    <div class="download-actions">
+                        <a
+                            class="button dark"
+                            href="https://github.com/duliodenis/nimlo/releases/download/0.1.0/Nimlo-0.1.0-macos-arm64.dmg"
+                            >Download DMG</a
+                        >
+                        <a
+                            class="button outline"
+                            href="https://github.com/duliodenis/nimlo/releases/tag/0.1.0"
+                            >Release notes</a
+                        >
+                    </div>
+                </div>
+            </section>
+
+            <section id="why" class="section">
+                <div class="section-inner split">
+                    <div>
+                        <h2>The web deserves more than one shape.</h2>
+                        <p>
+                            Modern browsers are powerful, but they have also
+                            become enormous platforms for ads, accounts,
+                            tracking, growth systems, and features many people
+                            never asked for.
+                        </p>
+                        <p>
+                            Nimlo starts small on purpose: a quiet browser shell
+                            built in Zig, using the system WebView today while
+                            growing user-owned browser features around it over
+                            time.
+                        </p>
+                    </div>
+                    <img
+                        class="mockup"
+                        src="assets/nimlo-mockup.jpg"
+                        alt="Nimlo browser prototype mockup"
+                    />
+                </div>
+            </section>
+
+            <section class="section principles">
+                <div class="section-inner">
+                    <h2>Built for user control.</h2>
+                    <div class="grid">
+                        <article
+                            class="item reveal"
+                            style="--reveal-delay: 0ms"
+                        >
+                            <h3>Private by default</h3>
+                            <p>
+                                No telemetry, no forced account, and
+                                nonpersistent browsing storage in the current
+                                prototype.
+                            </p>
+                        </article>
+                        <article
+                            class="item reveal"
+                            style="--reveal-delay: 90ms"
+                        >
+                            <h3>Small enough to understand</h3>
+                            <p>
+                                The first goal is a readable browser shell with
+                                clear boundaries between app, tabs, WebView, and
+                                storage.
+                            </p>
+                        </article>
+                        <article
+                            class="item reveal"
+                            style="--reveal-delay: 180ms"
+                        >
+                            <h3>Useful before it is huge</h3>
+                            <p>
+                                Nimlo does not try to replace the whole browser
+                                engine first. It ships a usable shell and
+                                deepens from there.
+                            </p>
+                        </article>
+                    </div>
+                </div>
+            </section>
+
+            <section id="status" class="section status-band">
+                <div class="section-inner">
+                    <h2>Prototype status.</h2>
+                    <p>
+                        Nimlo is not a production browser yet. The macOS
+                        prototype currently focuses on a fast, minimal shell
+                        with reliable tab and WebView lifecycle behavior.
+                    </p>
+                    <ul class="checks">
+                        <li class="reveal" style="--reveal-delay: 0ms">
+                            <svg
+                                class="check"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                aria-hidden="true"
+                            >
+                                <path
+                                    d="m5 12 4 4 10-10"
+                                    stroke="currentColor"
+                                    stroke-width="2.4"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                /></svg
+                            >Native macOS window chrome
+                        </li>
+                        <li class="reveal" style="--reveal-delay: 70ms">
+                            <svg
+                                class="check"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                aria-hidden="true"
+                            >
+                                <path
+                                    d="m5 12 4 4 10-10"
+                                    stroke="currentColor"
+                                    stroke-width="2.4"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                /></svg
+                            >Independent WebView per tab
+                        </li>
+                        <li class="reveal" style="--reveal-delay: 140ms">
+                            <svg
+                                class="check"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                aria-hidden="true"
+                            >
+                                <path
+                                    d="m5 12 4 4 10-10"
+                                    stroke="currentColor"
+                                    stroke-width="2.4"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                /></svg
+                            >Address bar and navigation controls
+                        </li>
+                        <li class="reveal" style="--reveal-delay: 210ms">
+                            <svg
+                                class="check"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                aria-hidden="true"
+                            >
+                                <path
+                                    d="m5 12 4 4 10-10"
+                                    stroke="currentColor"
+                                    stroke-width="2.4"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                /></svg
+                            >New, close, and switch tabs
+                        </li>
+                        <li class="reveal" style="--reveal-delay: 280ms">
+                            <svg
+                                class="check"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                aria-hidden="true"
+                            >
+                                <path
+                                    d="m5 12 4 4 10-10"
+                                    stroke="currentColor"
+                                    stroke-width="2.4"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                /></svg
+                            >Nonpersistent WebKit data store
+                        </li>
+                        <li class="reveal" style="--reveal-delay: 350ms">
+                            <svg
+                                class="check"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                aria-hidden="true"
+                            >
+                                <path
+                                    d="m5 12 4 4 10-10"
+                                    stroke="currentColor"
+                                    stroke-width="2.4"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                /></svg
+                            >No ads, telemetry, or accounts
+                        </li>
+                    </ul>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <div class="footer-inner">
+                <span>Nimlo is experimental open-source software.</span>
+                <span
+                    ><a href="https://github.com/duliodenis/nimlo"
+                        >GitHub</a
+                    ></span
+                >
+            </div>
+        </footer>
+        <script>
+            const revealItems = document.querySelectorAll(".reveal");
+
+            if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+                revealItems.forEach((item) => item.classList.add("visible"));
+            } else {
+                const observer = new IntersectionObserver(
+                    (entries) => {
+                        entries.forEach((entry) => {
+                            if (!entry.isIntersecting) return;
+                            entry.target.classList.add("visible");
+                            observer.unobserve(entry.target);
+                        });
+                    },
+                    {
+                        threshold: 0.18,
+                        rootMargin: "0px 0px -8% 0px",
+                    },
+                );
+
+                revealItems.forEach((item) => observer.observe(item));
+            }
+        </script>
+    </body>
 </html>

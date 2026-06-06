@@ -9,6 +9,8 @@
   <string>Nimlo</string>
   <key>CFBundleExecutable</key>
   <string>nimlo</string>
+  <key>CFBundleIconFile</key>
+  <string>Nimlo</string>
   <key>CFBundleIdentifier</key>
   <string>dev.nimlo.browser</string>
   <key>CFBundleInfoDictionaryVersion</key>

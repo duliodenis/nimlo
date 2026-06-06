@@ -38,24 +38,58 @@ pub fn build(b: *std.Build) void {
             b.path("macos/Info.plist"),
             "Nimlo.app/Contents/Info.plist",
         );
+        const generated_icon = b.addSystemCommand(&.{
+            "iconutil",
+            "-c",
+            "icns",
+            b.path("macos/Nimlo.iconset").getPath(b),
+            "-o",
+            b.getInstallPath(.prefix, "Nimlo.app/Contents/Resources/Nimlo.icns"),
+        });
+        generated_icon.step.dependOn(&bundle_exe.step);
+        generated_icon.step.dependOn(&bundle_plist.step);
 
         b.getInstallStep().dependOn(&bundle_exe.step);
         b.getInstallStep().dependOn(&bundle_plist.step);
+        b.getInstallStep().dependOn(&generated_icon.step);
+
+        const sign_bundle = b.addSystemCommand(&.{
+            "codesign",
+            "--force",
+            "--sign",
+            "-",
+            b.getInstallPath(.prefix, "Nimlo.app"),
+        });
+        sign_bundle.step.dependOn(&bundle_exe.step);
+        sign_bundle.step.dependOn(&bundle_plist.step);
+        sign_bundle.step.dependOn(&generated_icon.step);
+        b.getInstallStep().dependOn(&sign_bundle.step);
 
         const bundle_step = b.step("bundle", "Build Nimlo.app");
-        bundle_step.dependOn(&bundle_exe.step);
-        bundle_step.dependOn(&bundle_plist.step);
-    }
-
-    const run_cmd = b.addRunArtifact(exe);
-    run_cmd.step.dependOn(b.getInstallStep());
-
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
+        bundle_step.dependOn(&sign_bundle.step);
     }
 
     const run_step = b.step("run", "Run Nimlo");
-    run_step.dependOn(&run_cmd.step);
+    if (target.result.os.tag == .macos) {
+        const open_cmd = b.addSystemCommand(&.{
+            "open",
+            "-n",
+            b.getInstallPath(.prefix, "Nimlo.app"),
+        });
+        open_cmd.step.dependOn(b.getInstallStep());
+        if (b.args) |args| {
+            open_cmd.addArg("--args");
+            open_cmd.addArgs(args);
+        }
+        run_step.dependOn(&open_cmd.step);
+    } else {
+        const run_cmd = b.addRunArtifact(exe);
+        run_cmd.step.dependOn(b.getInstallStep());
+        if (b.args) |args| {
+            run_cmd.addArgs(args);
+        }
+        run_step.dependOn(&run_cmd.step);
+    }
 
     const url_input_tests = b.addTest(.{
         .name = "url-input-tests",

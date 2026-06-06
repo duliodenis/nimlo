@@ -1,5 +1,6 @@
 const std = @import("std");
 const window = @import("window.zig");
+const chrome = @import("../ui/chrome_macos.zig");
 
 const c = @cImport({
     @cInclude("objc/runtime.h");
@@ -28,6 +29,8 @@ const CGRect = extern struct {
 };
 
 const NSApplicationActivationPolicyRegular: isize = 0;
+const NSTerminateCancel: isize = 0;
+const NSTerminateNow: isize = 1;
 const NSBackingStoreBuffered: usize = 2;
 const NSWindowTitleHidden: isize = 1;
 const NSWindowStyleMaskTitled: usize = 1 << 0;
@@ -89,6 +92,7 @@ fn sharedApplication() !Id {
 
     _ = msg1(u8, app, sel("setActivationPolicy:"), NSApplicationActivationPolicyRegular);
     msg0(void, app, sel("finishLaunching"));
+    installApplicationIcon(app);
 
     const delegate = msg0(Id, msg0(Id, cls("NimloAppDelegate"), sel("alloc")), sel("init"));
     msg1(void, app, sel("setDelegate:"), delegate);
@@ -122,6 +126,19 @@ fn createNativeWindow(title: [:0]const u8, width: u32, height: u32) !Id {
     return handle;
 }
 
+fn installApplicationIcon(app: Id) void {
+    const bundle = msg0(Id, cls("NSBundle"), sel("mainBundle"));
+    if (bundle == null) return;
+
+    const path = msg2(Id, bundle, sel("pathForResource:ofType:"), nsString("Nimlo"), nsString("icns"));
+    if (path == null) return;
+
+    const image = msg1(Id, msg0(Id, cls("NSImage"), sel("alloc")), sel("initWithContentsOfFile:"), path);
+    if (image == null) return;
+
+    msg1(void, app, sel("setApplicationIconImage:"), image);
+}
+
 fn installAppDelegateClass() void {
     if (c.objc_getClass("NimloAppDelegate") != null) return;
 
@@ -129,6 +146,12 @@ fn installAppDelegateClass() void {
     const delegate_class = c.objc_allocateClassPair(superclass, "NimloAppDelegate", 0);
     if (delegate_class == null) return;
 
+    _ = c.class_addMethod(
+        delegate_class,
+        c.sel_registerName("applicationShouldTerminate:"),
+        @ptrCast(&applicationShouldTerminate),
+        "q@:@",
+    );
     _ = c.class_addMethod(
         delegate_class,
         c.sel_registerName("applicationShouldTerminateAfterLastWindowClosed:"),
@@ -141,6 +164,10 @@ fn installAppDelegateClass() void {
 
 fn applicationShouldTerminateAfterLastWindowClosed(_: Id, _: Sel, _: Id) callconv(.c) u8 {
     return 1;
+}
+
+fn applicationShouldTerminate(_: Id, _: Sel, _: Id) callconv(.c) isize {
+    return if (chrome.confirmQuitIfNeeded()) NSTerminateNow else NSTerminateCancel;
 }
 
 fn cls(name: [:0]const u8) Class {
@@ -164,6 +191,13 @@ fn msg1(comptime ReturnType: type, receiver: Id, selector: Sel, arg1: anytype) R
     const Arg1 = @TypeOf(arg1);
     const Fn = *const fn (Id, Sel, Arg1) callconv(.c) ReturnType;
     return @as(Fn, @ptrCast(&objc_msgSend))(receiver, selector, arg1);
+}
+
+fn msg2(comptime ReturnType: type, receiver: Id, selector: Sel, arg1: anytype, arg2: anytype) ReturnType {
+    const Arg1 = @TypeOf(arg1);
+    const Arg2 = @TypeOf(arg2);
+    const Fn = *const fn (Id, Sel, Arg1, Arg2) callconv(.c) ReturnType;
+    return @as(Fn, @ptrCast(&objc_msgSend))(receiver, selector, arg1, arg2);
 }
 
 fn msg5(

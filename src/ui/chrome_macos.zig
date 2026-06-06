@@ -52,6 +52,7 @@ const titlebar_new_tab_button_size: CGFloat = 28;
 const titlebar_new_tab_button_gap: CGFloat = 4;
 
 const NSButtonTypeMomentaryChange: usize = 5;
+const NSModalResponseSecondButtonReturn: isize = 1001;
 const NSImageLeft: isize = 2;
 const NSImageScaleProportionallyDown: isize = 1;
 const NSImageSymbolScaleMedium: isize = 2;
@@ -226,6 +227,41 @@ pub fn setActiveWebView(webview: Id) void {
     updateAddressFromWebView(webview);
     updateWindowTitleFromWebView(webview);
     setLoadingState(webViewIsLoading(webview));
+}
+
+pub fn confirmQuitIfNeeded() bool {
+    const tab_count = current_tab_snapshots.items.len;
+    if (tab_count <= 1) return true;
+
+    const alert = msg0(Id, msg0(Id, cls("NSAlert"), sel("alloc")), sel("init"));
+    if (alert == null) return true;
+
+    const message_text = std.fmt.allocPrint(
+        std.heap.page_allocator,
+        "You have {d} tabs open. Nimlo does not restore tabs yet.",
+        .{tab_count},
+    ) catch return true;
+    const message = std.heap.page_allocator.dupeZ(u8, message_text) catch return true;
+
+    msg1(void, alert, sel("setMessageText:"), nsString("Quit Nimlo?"));
+    msg1(void, alert, sel("setInformativeText:"), nsString(message));
+    if (bundledAppIcon()) |icon| {
+        msg1(void, alert, sel("setIcon:"), icon);
+    }
+    _ = msg1(Id, alert, sel("addButtonWithTitle:"), nsString("Don't Quit"));
+    _ = msg1(Id, alert, sel("addButtonWithTitle:"), nsString("Quit"));
+
+    return msg0(isize, alert, sel("runModal")) == NSModalResponseSecondButtonReturn;
+}
+
+fn bundledAppIcon() Id {
+    const bundle = msg0(Id, cls("NSBundle"), sel("mainBundle"));
+    if (bundle == null) return null;
+
+    const path = msg2(Id, bundle, sel("pathForResource:ofType:"), nsString("Nimlo"), nsString("icns"));
+    if (path == null) return null;
+
+    return msg1(Id, msg0(Id, cls("NSImage"), sel("alloc")), sel("initWithContentsOfFile:"), path);
 }
 
 fn addTitlebarTabStrip(window_handle: Id, target: Id) !void {

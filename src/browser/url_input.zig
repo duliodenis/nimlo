@@ -28,6 +28,7 @@ pub fn normalizeWithSearchPrefix(
 fn hasKnownScheme(input: []const u8) bool {
     return std.mem.startsWith(u8, input, "http://") or
         std.mem.startsWith(u8, input, "https://") or
+        std.mem.startsWith(u8, input, "file://") or
         std.mem.startsWith(u8, input, "nimlo://");
 }
 
@@ -104,6 +105,22 @@ test "preserves Nimlo internal URLs" {
     defer allocator.free(normalized);
 
     try std.testing.expectEqualStrings("nimlo://start", normalized);
+}
+
+test "preserves file URLs" {
+    const allocator = std.testing.allocator;
+    const normalized = try normalize(allocator, " file:///Users/dd/dev/github/nimlo/docs/index.html ");
+    defer allocator.free(normalized);
+
+    try std.testing.expectEqualStrings("file:///Users/dd/dev/github/nimlo/docs/index.html", normalized);
+}
+
+test "preserves file directory URLs" {
+    const allocator = std.testing.allocator;
+    const normalized = try normalize(allocator, "file:///Users/dd/dev/github/nimlo/");
+    defer allocator.free(normalized);
+
+    try std.testing.expectEqualStrings("file:///Users/dd/dev/github/nimlo/", normalized);
 }
 
 test "normalizes domain-like input to https" {

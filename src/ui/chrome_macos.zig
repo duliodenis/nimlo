@@ -1017,6 +1017,12 @@ fn addressSubmitted(target: Id, _: Sel, _: Id) callconv(.c) void {
         return;
     }
 
+    if (tryLoadLocalDirectory(webview, normalized)) {
+        msg1(void, address_field, sel("setStringValue:"), nsString(std.heap.page_allocator.dupeZ(u8, normalized) catch return));
+        std.debug.print("address bar loading local directory: {s}\n", .{normalized});
+        return;
+    }
+
     const url_z = std.heap.page_allocator.dupeZ(u8, normalized) catch return;
     const ns_url = msg1(Id, cls("NSURL"), sel("URLWithString:"), nsString(url_z));
     if (ns_url == null) return;
@@ -1117,6 +1123,180 @@ fn loadInternalStartPage(webview: Id) !void {
         @as(Id, null),
     );
     noteInternalLoad(webview);
+}
+
+fn tryLoadLocalDirectory(webview: Id, file_url: []const u8) bool {
+    const path = filePathFromUrl(file_url) catch return false;
+    defer std.heap.page_allocator.free(path);
+
+    const path_z = std.heap.page_allocator.dupeZ(u8, path) catch return false;
+    const dir = std.c.opendir(path_z.ptr) orelse return false;
+    defer _ = std.c.closedir(dir);
+
+    const html = directoryListingHtml(path, file_url, dir) catch return false;
+    const html_z = std.heap.page_allocator.dupeZ(u8, html) catch return false;
+
+    _ = msg2(
+        Id,
+        webview,
+        sel("loadHTMLString:baseURL:"),
+        nsString(html_z),
+        @as(Id, null),
+    );
+    noteLocalDirectoryLoad(webview, file_url, path);
+    return true;
+}
+
+fn noteLocalDirectoryLoad(webview: Id, file_url: []const u8, path: []const u8) void {
+    setWebViewInternal(webview, false);
+    setWebViewLoading(webview, false);
+
+    const title = std.fmt.allocPrint(std.heap.page_allocator, "Index of {s}", .{std.fs.path.basename(path)}) catch "Local Folder";
+    const title_z = std.heap.page_allocator.dupeZ(u8, title) catch "Local Folder";
+    const url = std.heap.page_allocator.dupe(u8, file_url) catch return;
+
+    if (isActiveWebView(webview)) {
+        setCurrentAddress(std.heap.page_allocator.dupeZ(u8, file_url) catch return);
+        setCurrentTabIcon(systemSymbol("folder", "Folder"));
+        setCurrentTabTitle(title_z);
+        const window_title = std.fmt.allocPrint(std.heap.page_allocator, "{s} - Nimlo", .{title}) catch return;
+        setWindowTitle(std.heap.page_allocator.dupeZ(u8, window_title) catch return);
+    }
+
+    webview_events.emitNavigation(.{
+        .source_handle = webview,
+        .url = url,
+        .title = title,
+        .loading_state = .idle,
+        .can_go_back = msg0(bool, webview, sel("canGoBack")),
+        .can_go_forward = msg0(bool, webview, sel("canGoForward")),
+    });
+}
+
+fn filePathFromUrl(file_url: []const u8) ![]u8 {
+    const prefix = "file://";
+    if (!std.mem.startsWith(u8, file_url, prefix)) return error.NotFileUrl;
+
+    var path_text = file_url[prefix.len..];
+    if (std.mem.startsWith(u8, path_text, "localhost/")) {
+        path_text = path_text["localhost".len..];
+    }
+    if (!std.mem.startsWith(u8, path_text, "/")) return error.UnsupportedFileUrl;
+
+    return percentDecode(std.heap.page_allocator, path_text);
+}
+
+fn percentDecode(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+
+    var index: usize = 0;
+    while (index < input.len) {
+        if (input[index] == '%' and index + 2 < input.len) {
+            if (hexValue(input[index + 1])) |high| {
+                if (hexValue(input[index + 2])) |low| {
+                    try output.append(allocator, (high << 4) | low);
+                    index += 3;
+                    continue;
+                }
+            }
+        }
+
+        try output.append(allocator, input[index]);
+        index += 1;
+    }
+
+    return output.toOwnedSlice(allocator);
+}
+
+fn hexValue(byte: u8) ?u8 {
+    if (byte >= '0' and byte <= '9') return byte - '0';
+    if (byte >= 'a' and byte <= 'f') return byte - 'a' + 10;
+    if (byte >= 'A' and byte <= 'F') return byte - 'A' + 10;
+    return null;
+}
+
+fn directoryListingHtml(path: []const u8, file_url: []const u8, dir: *std.c.DIR) ![]u8 {
+    var html = std.ArrayList(u8).empty;
+    errdefer html.deinit(std.heap.page_allocator);
+
+    try html.appendSlice(std.heap.page_allocator,
+        \\<!doctype html><html><head><meta charset="utf-8">
+        \\<meta name="viewport" content="width=device-width, initial-scale=1">
+        \\<style>
+        \\body{margin:0;padding:32px;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f7f8fb;color:#101828}
+        \\main{max-width:920px;margin:0 auto}
+        \\h1{font-size:28px;margin:0 0 8px}
+        \\p{margin:0 0 24px;color:#667085}
+        \\a{color:#344054;text-decoration:none}
+        \\a:hover{text-decoration:underline}
+        \\ul{list-style:none;margin:0;padding:0;border:1px solid #d0d5dd;border-radius:8px;background:#fff;overflow:hidden}
+        \\li{border-top:1px solid #eaecf0}
+        \\li:first-child{border-top:0}
+        \\li a{display:flex;gap:10px;padding:12px 14px;align-items:center}
+        \\.kind{width:1.6em;text-align:center}
+        \\</style><title>
+    );
+    try appendEscapedHtml(&html, path);
+    try html.appendSlice(std.heap.page_allocator, "</title></head><body><main><h1>");
+    try appendEscapedHtml(&html, std.fs.path.basename(path));
+    try html.appendSlice(std.heap.page_allocator, "</h1><p>");
+    try appendEscapedHtml(&html, file_url);
+    try html.appendSlice(std.heap.page_allocator, "</p><ul>");
+
+    while (std.c.readdir(dir)) |entry| {
+        const name = entry.name[0..entry.namlen];
+        if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
+
+        const is_directory = entry.type == std.c.DT.DIR;
+        const child_path = try std.fs.path.join(std.heap.page_allocator, &.{ path, name });
+        defer std.heap.page_allocator.free(child_path);
+
+        try html.appendSlice(std.heap.page_allocator, "<li><a href=\"");
+        try appendFileUrl(&html, child_path, is_directory);
+        try html.appendSlice(std.heap.page_allocator, "\"><span class=\"kind\">");
+        try html.appendSlice(std.heap.page_allocator, if (is_directory) "&#128193;" else "&#128196;");
+        try html.appendSlice(std.heap.page_allocator, "</span><span>");
+        try appendEscapedHtml(&html, name);
+        if (is_directory) try html.appendSlice(std.heap.page_allocator, "/");
+        try html.appendSlice(std.heap.page_allocator, "</span></a></li>");
+    }
+
+    try html.appendSlice(std.heap.page_allocator, "</ul></main></body></html>");
+    return html.toOwnedSlice(std.heap.page_allocator);
+}
+
+fn appendFileUrl(output: *std.ArrayList(u8), path: []const u8, is_directory: bool) !void {
+    try output.appendSlice(std.heap.page_allocator, "file://");
+    try appendPercentEncodedPath(output, path);
+    if (is_directory and !std.mem.endsWith(u8, path, "/")) {
+        try output.append(std.heap.page_allocator, '/');
+    }
+}
+
+fn appendPercentEncodedPath(output: *std.ArrayList(u8), path: []const u8) !void {
+    const hex = "0123456789ABCDEF";
+    for (path) |byte| {
+        if (std.ascii.isAlphanumeric(byte) or byte == '/' or byte == '-' or byte == '_' or byte == '.' or byte == '~') {
+            try output.append(std.heap.page_allocator, byte);
+        } else {
+            try output.append(std.heap.page_allocator, '%');
+            try output.append(std.heap.page_allocator, hex[byte >> 4]);
+            try output.append(std.heap.page_allocator, hex[byte & 0x0f]);
+        }
+    }
+}
+
+fn appendEscapedHtml(output: *std.ArrayList(u8), text: []const u8) !void {
+    for (text) |byte| {
+        switch (byte) {
+            '&' => try output.appendSlice(std.heap.page_allocator, "&amp;"),
+            '<' => try output.appendSlice(std.heap.page_allocator, "&lt;"),
+            '>' => try output.appendSlice(std.heap.page_allocator, "&gt;"),
+            '"' => try output.appendSlice(std.heap.page_allocator, "&quot;"),
+            else => try output.append(std.heap.page_allocator, byte),
+        }
+    }
 }
 
 fn navigationStarted(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {

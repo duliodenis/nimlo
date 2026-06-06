@@ -2,6 +2,7 @@ const std = @import("std");
 const browser = @import("../browser/browser.zig");
 const preferences = @import("../storage/preferences.zig");
 const private_mode = @import("../privacy/private_mode.zig");
+const about_page = @import("../ui/about_page.zig");
 const start_page = @import("../ui/start_page.zig");
 const window = @import("window.zig");
 const webview = @import("../webview/webview_adapter.zig");
@@ -31,6 +32,10 @@ pub fn run() !void {
 fn loadHomepage(engine: *webview.WebViewAdapter, homepage_url: []const u8) !void {
     if (std.mem.eql(u8, homepage_url, "nimlo://start")) {
         try engine.loadHtml(start_page.html, homepage_url);
+        return;
+    }
+    if (std.mem.eql(u8, homepage_url, "nimlo://about")) {
+        try engine.loadHtml(about_page.html, homepage_url);
         return;
     }
 

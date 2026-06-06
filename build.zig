@@ -14,6 +14,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    root_module.addAnonymousImport("about_page_asset", .{
+        .root_source_file = b.path("assets/about_page/about_page.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 
     const exe = b.addExecutable(.{
         .name = "nimlo",
@@ -128,6 +133,11 @@ pub fn build(b: *std.Build) void {
     });
     browser_tests.root_module.addAnonymousImport("start_page_asset", .{
         .root_source_file = b.path("assets/start_page/start_page.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    browser_tests.root_module.addAnonymousImport("about_page_asset", .{
+        .root_source_file = b.path("assets/about_page/about_page.zig"),
         .target = target,
         .optimize = optimize,
     });

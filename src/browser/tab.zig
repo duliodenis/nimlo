@@ -31,7 +31,7 @@ pub const Tab = struct {
     pub fn init(id: TabId, start_url: []const u8, is_private: bool) Tab {
         return .{
             .id = id,
-            .title = "Nimlo",
+            .title = if (std.mem.eql(u8, start_url, "nimlo://about")) "About Nimlo" else "Nimlo",
             .current_url = start_url,
             .favicon_url = "",
             .loading_state = .idle,
@@ -70,6 +70,7 @@ pub const Tab = struct {
 
 fn fallbackTitle(url: []const u8) []const u8 {
     if (std.mem.eql(u8, url, "nimlo://start")) return "Nimlo";
+    if (std.mem.eql(u8, url, "nimlo://about")) return "About Nimlo";
 
     const scheme_end = std.mem.indexOf(u8, url, "://") orelse return url;
     const host_start = scheme_end + 3;
@@ -91,6 +92,13 @@ test "default tab state" {
     try std.testing.expect(!tab.can_go_forward);
     try std.testing.expect(!tab.is_private);
     try std.testing.expect(tab.webview_handle == null);
+}
+
+test "about tab title" {
+    const tab = Tab.init(7, "nimlo://about", false);
+
+    try std.testing.expectEqualStrings("About Nimlo", tab.title);
+    try std.testing.expectEqualStrings("nimlo://about", tab.current_url);
 }
 
 test "private tab state" {

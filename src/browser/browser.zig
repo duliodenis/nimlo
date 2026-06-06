@@ -3,6 +3,7 @@ const preferences = @import("../storage/preferences.zig");
 const private_mode = @import("../privacy/private_mode.zig");
 const tab_manager = @import("tab_manager.zig");
 const tab_model = @import("tab.zig");
+const about_page = @import("../ui/about_page.zig");
 const start_page = @import("../ui/start_page.zig");
 const webview = @import("../webview/webview_adapter.zig");
 const webview_events = @import("../webview/webview_events.zig");
@@ -44,6 +45,7 @@ pub const Browser = struct {
             .context = self,
             .on_navigation = handleNavigationEvent,
             .on_new_tab_requested = handleNewTabRequested,
+            .on_url_open_requested = handleUrlOpenRequested,
             .on_tab_activated_requested = handleTabActivatedRequested,
             .on_tab_closed_requested = handleTabClosedRequested,
         });
@@ -93,20 +95,47 @@ pub const Browser = struct {
         self.publishTabsChanged();
     }
 
+    fn handleUrlOpenRequested(context: *anyopaque, url: []const u8) void {
+        const self: *Browser = @ptrCast(@alignCast(context));
+        self.openOrActivateUrl(url) catch return;
+    }
+
+    fn openOrActivateUrl(self: *Browser, url: []const u8) !void {
+        for (self.tabs.tabs.items) |tab| {
+            if (std.mem.eql(u8, tab.current_url, url)) {
+                if (!self.tabs.activateTab(tab.id)) return;
+                const active_tab = self.tabs.activeTab() orelse return;
+                try self.showOrCreateWebViewForActiveTab(active_tab);
+                self.publishTabsChanged();
+                return;
+            }
+        }
+
+        const owned_url = try self.allocator.dupe(u8, url);
+        _ = try self.tabs.createTab(owned_url, self.private_mode.enabled);
+        const active_tab = self.tabs.activeTab() orelse return;
+        try self.showOrCreateWebViewForActiveTab(active_tab);
+        self.publishTabsChanged();
+    }
+
     fn handleTabActivatedRequested(context: *anyopaque, tab_id: u64) void {
         const self: *Browser = @ptrCast(@alignCast(context));
         if (!self.tabs.activateTab(tab_id)) return;
         const active_tab = self.tabs.activeTab() orelse return;
 
+        self.showOrCreateWebViewForActiveTab(active_tab) catch return;
+        self.publishTabsChanged();
+    }
+
+    fn showOrCreateWebViewForActiveTab(self: *Browser, active_tab: *tab_model.Tab) !void {
         if (active_tab.webview_handle) |handle| {
             self.webview_adapter.showWebView(handle);
         } else {
-            const handle = self.webview_adapter.createWebView() catch return;
+            const handle = try self.webview_adapter.createWebView();
             active_tab.attachWebView(handle);
             self.webview_adapter.showWebView(handle);
-            self.loadTab(active_tab.*) catch return;
+            try self.loadTab(active_tab.*);
         }
-        self.publishTabsChanged();
     }
 
     fn handleTabClosedRequested(context: *anyopaque, tab_id: u64) void {
@@ -141,6 +170,10 @@ pub const Browser = struct {
         if (std.mem.eql(u8, tab.current_url, "nimlo://start")) {
             // TODO(internal pages): move start-page HTML into a browser-owned internal page registry.
             try self.webview_adapter.loadHtml(start_page.html, tab.current_url);
+            return;
+        }
+        if (std.mem.eql(u8, tab.current_url, "nimlo://about")) {
+            try self.webview_adapter.loadHtml(about_page.html, tab.current_url);
             return;
         }
 
@@ -345,6 +378,70 @@ test "new tab command creates and activates startup tab" {
     const active_tab = browser.tabs.activeTab().?;
     try std.testing.expectEqualStrings("nimlo://start", active_tab.current_url);
     try std.testing.expectEqualStrings("Nimlo", active_tab.title);
+}
+
+test "open url command creates about tab" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.start();
+    webview_events.emitUrlOpenRequested("nimlo://about");
+
+    try std.testing.expectEqual(@as(usize, 2), browser.tabs.len());
+    const active_tab = browser.tabs.activeTab().?;
+    try std.testing.expectEqualStrings("nimlo://about", active_tab.current_url);
+    try std.testing.expectEqualStrings("About Nimlo", active_tab.title);
+}
+
+test "open url command activates existing about tab" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.start();
+    webview_events.emitUrlOpenRequested("nimlo://about");
+    const about_tab_id = browser.tabs.active_tab_id.?;
+    webview_events.emitNewTabRequested();
+
+    try std.testing.expectEqual(@as(usize, 3), browser.tabs.len());
+    try std.testing.expect(browser.tabs.active_tab_id.? != about_tab_id);
+
+    webview_events.emitUrlOpenRequested("nimlo://about");
+
+    try std.testing.expectEqual(@as(usize, 3), browser.tabs.len());
+    try std.testing.expectEqual(about_tab_id, browser.tabs.active_tab_id.?);
+}
+
+test "about tab survives native internal navigation event" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.start();
+    webview_events.emitUrlOpenRequested("nimlo://about");
+
+    webview_events.emitNavigation(.{
+        .source_handle = browser.tabs.activeTab().?.webview_handle,
+        .url = "nimlo://about",
+        .title = "About Nimlo",
+        .loading_state = .idle,
+    });
+
+    try std.testing.expectEqualStrings("nimlo://about", browser.tabs.activeTab().?.current_url);
+    try std.testing.expectEqualStrings("About Nimlo", browser.tabs.activeTab().?.title);
 }
 
 test "tab activation command switches active tab" {

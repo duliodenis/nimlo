@@ -75,7 +75,7 @@ pub const MacOSWebView = struct {
             nsString(html_z),
             @as(Id, null),
         );
-        chrome.noteInternalLoad(self.handle);
+        chrome.noteInternalLoadForUrl(self.handle, base_url);
         std.debug.print("macOS WKWebView loading internal page: {s}\n", .{base_url});
     }
 

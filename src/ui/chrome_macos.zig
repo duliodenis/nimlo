@@ -1,5 +1,6 @@
 const std = @import("std");
 const url_input = @import("../browser/url_input.zig");
+const about_page = @import("about_page.zig");
 const start_page = @import("start_page.zig");
 const webview_events = @import("../webview/webview_events.zig");
 
@@ -78,6 +79,8 @@ extern "c" fn arc4random_buf(buffer: *anyopaque, size: usize) void;
 const WebViewChromeState = struct {
     webview: Id,
     is_internal: bool = false,
+    internal_url: []const u8 = "",
+    internal_title: []const u8 = "",
     is_loading: bool = false,
     local_directory_url: []const u8 = "",
     local_directory_title: []const u8 = "",
@@ -135,6 +138,7 @@ pub fn install(window_handle: Id, content_view: Id, bounds: CGRect, webview: Id)
 pub fn noteExternalLoad(webview: Id) void {
     const state = ensureWebViewChromeState(webview) catch return;
     state.is_internal = false;
+    clearInternalPageState(state);
     clearLocalDirectoryState(state);
 
     if (isActiveWebView(webview)) {
@@ -143,22 +147,39 @@ pub fn noteExternalLoad(webview: Id) void {
 }
 
 pub fn noteInternalLoad(webview: Id) void {
+    noteInternalLoadForUrl(webview, "nimlo://start");
+}
+
+pub fn noteInternalLoadForUrl(webview: Id, url: []const u8) void {
+    if (std.mem.eql(u8, url, "nimlo://about")) {
+        noteInternalPageLoad(webview, "nimlo://about", "About Nimlo", "info.circle", "About Nimlo");
+        return;
+    }
+
+    noteInternalPageLoad(webview, "nimlo://start", "Nimlo", "sparkles", "Nimlo");
+}
+
+fn noteInternalPageLoad(webview: Id, url: []const u8, title: []const u8, symbol: [:0]const u8, accessibility_description: [:0]const u8) void {
     const state = ensureWebViewChromeState(webview) catch return;
     state.is_internal = true;
+    state.internal_url = url;
+    state.internal_title = title;
     state.is_loading = false;
     clearLocalDirectoryState(state);
 
+    const address_z = std.heap.page_allocator.dupeZ(u8, url) catch return;
+    const title_z = std.heap.page_allocator.dupeZ(u8, title) catch return;
     if (isActiveWebView(webview)) {
-        setCurrentAddress("nimlo://start");
-        setCurrentTabIcon(systemSymbol("sparkles", "Nimlo"));
-        setCurrentTabTitle("Nimlo");
-        setWindowTitle("Nimlo");
+        setCurrentAddress(address_z);
+        setCurrentTabIcon(systemSymbol(symbol, accessibility_description));
+        setCurrentTabTitle(title_z);
+        setWindowTitle(title_z);
         setLoadingState(false);
     }
     webview_events.emitNavigation(.{
         .source_handle = webview,
-        .url = "nimlo://start",
-        .title = "Nimlo",
+        .url = url,
+        .title = title,
         .loading_state = .idle,
     });
 }
@@ -687,6 +708,7 @@ fn tabImage(tab: webview_events.TabSnapshot) Id {
 
 fn defaultFaviconForTab(tab: webview_events.TabSnapshot) Id {
     if (std.mem.eql(u8, tab.url, "nimlo://start")) return systemSymbol("sparkles", "Nimlo");
+    if (std.mem.eql(u8, tab.url, "nimlo://about")) return systemSymbol("info.circle", "About Nimlo");
     return defaultFavicon();
 }
 
@@ -778,6 +800,8 @@ fn installCommandMenus(target: Id) void {
     const app_menu = msg0(Id, msg0(Id, cls("NSMenu"), sel("alloc")), sel("init"));
     const app_item = msg0(Id, msg0(Id, cls("NSMenuItem"), sel("alloc")), sel("init"));
     if (app_menu != null and app_item != null) {
+        addMenuItem(app_menu, "About Nimlo", sel("aboutNimlo:"), "", 0, target);
+        msg1(void, app_menu, sel("addItem:"), msg0(Id, cls("NSMenuItem"), sel("separatorItem")));
         addMenuItem(app_menu, "Quit Nimlo", sel("terminate:"), "q", NSEventModifierFlagCommand, null);
         msg1(void, app_item, sel("setSubmenu:"), app_menu);
         msg1(void, main_menu, sel("addItem:"), app_item);
@@ -913,6 +937,12 @@ fn installAddressBarTargetClass() void {
     );
     _ = c.class_addMethod(
         target_class,
+        c.sel_registerName("aboutNimlo:"),
+        @ptrCast(&aboutNimlo),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
         c.sel_registerName("activateTab:"),
         @ptrCast(&activateTab),
         "v@:@",
@@ -1039,6 +1069,13 @@ fn addressSubmitted(target: Id, _: Sel, _: Id) callconv(.c) void {
         return;
     }
 
+    if (std.mem.eql(u8, normalized, "nimlo://about")) {
+        msg1(void, address_field, sel("setStringValue:"), nsString("nimlo://about"));
+        loadInternalAboutPage(webview) catch return;
+        std.debug.print("address bar loading internal page: {s}\n", .{normalized});
+        return;
+    }
+
     if (tryLoadLocalDirectory(webview, normalized)) {
         msg1(void, address_field, sel("setStringValue:"), nsString(std.heap.page_allocator.dupeZ(u8, normalized) catch return));
         std.debug.print("address bar loading local directory: {s}\n", .{normalized});
@@ -1076,6 +1113,12 @@ fn newTab(target: Id, _: Sel, _: Id) callconv(.c) void {
     _ = target;
     webview_events.emitNewTabRequested();
     std.debug.print("new tab requested.\n", .{});
+}
+
+fn aboutNimlo(target: Id, _: Sel, _: Id) callconv(.c) void {
+    _ = target;
+    webview_events.emitUrlOpenRequested("nimlo://about");
+    std.debug.print("about page requested.\n", .{});
 }
 
 fn activateTab(_: Id, _: Sel, sender: Id) callconv(.c) void {
@@ -1127,7 +1170,15 @@ fn reload(target: Id, _: Sel, _: Id) callconv(.c) void {
     }
 
     if (webViewIsInternal(webview)) {
-        loadInternalStartPage(webview) catch return;
+        if (activeInternalPageUrl(webview)) |url| {
+            if (std.mem.eql(u8, url, "nimlo://about")) {
+                loadInternalAboutPage(webview) catch return;
+            } else {
+                loadInternalStartPage(webview) catch return;
+            }
+        } else {
+            loadInternalStartPage(webview) catch return;
+        }
         std.debug.print("reloaded internal start page.\n", .{});
         return;
     }
@@ -1145,6 +1196,18 @@ fn loadInternalStartPage(webview: Id) !void {
         @as(Id, null),
     );
     noteInternalLoad(webview);
+}
+
+fn loadInternalAboutPage(webview: Id) !void {
+    const html_z = try std.heap.page_allocator.dupeZ(u8, about_page.html);
+    _ = msg2(
+        Id,
+        webview,
+        sel("loadHTMLString:baseURL:"),
+        nsString(html_z),
+        @as(Id, null),
+    );
+    noteInternalLoadForUrl(webview, "nimlo://about");
 }
 
 fn tryLoadLocalDirectory(webview: Id, file_url: []const u8) bool {
@@ -1380,6 +1443,12 @@ fn decideNavigationPolicy(_: Id, _: Sel, webview: Id, navigation_action: Id, dec
     const raw = if (absolute != null) msg0(?[*:0]const u8, absolute, sel("UTF8String")) else null;
     const target_url = if (raw) |value| std.mem.span(value) else "";
 
+    if (webViewIsInternal(webview) and isExternalWebUrl(target_url)) {
+        webview_events.emitUrlOpenRequested(target_url);
+        decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
+        return;
+    }
+
     if (std.mem.startsWith(u8, target_url, "file://") and localFileUrlIsDirectory(target_url)) {
         if (tryLoadLocalDirectory(webview, target_url)) {
             decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
@@ -1388,6 +1457,10 @@ fn decideNavigationPolicy(_: Id, _: Sel, webview: Id, navigation_action: Id, dec
     }
 
     decision_handler.invoke(decision_handler, WKNavigationActionPolicyAllow);
+}
+
+fn isExternalWebUrl(url: []const u8) bool {
+    return std.mem.startsWith(u8, url, "http://") or std.mem.startsWith(u8, url, "https://");
 }
 
 fn navigationStarted(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
@@ -1423,7 +1496,10 @@ fn navigationFailed(target: Id, _: Sel, webview: Id, _: Id, _: Id) callconv(.c) 
 fn updateAddressFromWebView(webview: Id) void {
     const url = msg0(Id, webview, sel("URL"));
     if (url == null) {
-        if (isActiveWebView(webview) and webViewIsInternal(webview)) setCurrentAddress("nimlo://start");
+        if (isActiveWebView(webview) and webViewIsInternal(webview)) {
+            const internal_url = activeInternalPageUrl(webview) orelse "nimlo://start";
+            setCurrentAddress(std.heap.page_allocator.dupeZ(u8, internal_url) catch return);
+        }
         return;
     }
 
@@ -1441,7 +1517,8 @@ fn updateAddressFromWebView(webview: Id) void {
 
     if (webViewIsInternal(webview) and std.mem.startsWith(u8, address, "about:")) {
         if (!isActiveWebView(webview)) return;
-        setCurrentAddress("nimlo://start");
+        const internal_url = activeInternalPageUrl(webview) orelse "nimlo://start";
+        setCurrentAddress(std.heap.page_allocator.dupeZ(u8, internal_url) catch return);
         return;
     }
 
@@ -1455,8 +1532,10 @@ fn updateWindowTitleFromWebView(webview: Id) void {
     if (!isActiveWebView(webview)) return;
 
     if (webViewIsInternal(webview)) {
-        setCurrentTabTitle("Nimlo");
-        setWindowTitle("Nimlo");
+        const title = activeInternalPageTitle(webview) orelse "Nimlo";
+        const title_z = std.heap.page_allocator.dupeZ(u8, title) catch return;
+        setCurrentTabTitle(title_z);
+        setWindowTitle(title_z);
         return;
     }
 
@@ -1779,8 +1858,8 @@ fn emitNavigationFromWebView(webview: Id, loading_state: webview_events.LoadingS
     var title_text: []const u8 = "";
 
     if (webViewIsInternal(webview)) {
-        url_text = "nimlo://start";
-        title_text = "Nimlo";
+        url_text = activeInternalPageUrl(webview) orelse "nimlo://start";
+        title_text = activeInternalPageTitle(webview) orelse "Nimlo";
     } else if (localDirectoryStateForWebView(webview)) |state| {
         url_text = state.local_directory_url;
         title_text = state.local_directory_title;
@@ -1824,10 +1903,12 @@ fn webViewTitle(webview: Id) ?[]const u8 {
 }
 
 fn titleFromWebViewUrl(webview: Id) ?[]const u8 {
+    if (webViewIsInternal(webview)) return activeInternalPageTitle(webview) orelse "Nimlo";
     if (localDirectoryStateForWebView(webview)) |state| return state.local_directory_title;
 
     const url = webViewUrl(webview) orelse return null;
     if (std.mem.eql(u8, url, "nimlo://start")) return "Nimlo";
+    if (std.mem.eql(u8, url, "nimlo://about")) return "About Nimlo";
 
     const scheme_end = std.mem.indexOf(u8, url, "://") orelse return url;
     const host_start = scheme_end + 3;
@@ -1883,6 +1964,23 @@ fn localDirectoryStateForActualUrl(webview: Id, actual_url: []const u8) ?*WebVie
     return null;
 }
 
+fn activeInternalPageUrl(webview: Id) ?[]const u8 {
+    const state = webViewChromeState(webview) orelse return null;
+    if (!state.is_internal or state.internal_url.len == 0) return null;
+    return state.internal_url;
+}
+
+fn activeInternalPageTitle(webview: Id) ?[]const u8 {
+    const state = webViewChromeState(webview) orelse return null;
+    if (!state.is_internal or state.internal_title.len == 0) return null;
+    return state.internal_title;
+}
+
+fn clearInternalPageState(state: *WebViewChromeState) void {
+    state.internal_url = "";
+    state.internal_title = "";
+}
+
 fn clearLocalDirectoryState(state: *WebViewChromeState) void {
     state.local_directory_url = "";
     state.local_directory_title = "";
@@ -1892,6 +1990,7 @@ fn clearLocalDirectoryState(state: *WebViewChromeState) void {
 fn setWebViewInternal(webview: Id, is_internal: bool) void {
     const state = ensureWebViewChromeState(webview) catch return;
     state.is_internal = is_internal;
+    if (!is_internal) clearInternalPageState(state);
 }
 
 fn webViewIsInternal(webview: Id) bool {

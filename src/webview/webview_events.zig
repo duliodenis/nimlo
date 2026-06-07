@@ -28,6 +28,7 @@ pub const EventSink = struct {
     on_new_tab_requested: ?*const fn (context: *anyopaque) void = null,
     on_url_open_requested: ?*const fn (context: *anyopaque, url: []const u8) void = null,
     on_internal_page_reload_requested: ?*const fn (context: *anyopaque, source_handle: ?*anyopaque, url: []const u8) void = null,
+    on_history_clear_requested: ?*const fn (context: *anyopaque, source_handle: ?*anyopaque) void = null,
     on_tab_activated_requested: ?*const fn (context: *anyopaque, tab_id: u64) void = null,
     on_tab_closed_requested: ?*const fn (context: *anyopaque, tab_id: u64) void = null,
 };
@@ -36,6 +37,7 @@ pub const ChromeSink = struct {
     context: *anyopaque,
     on_tabs_changed: *const fn (context: *anyopaque, tabs: []const TabSnapshot) void,
     on_app_close_requested: ?*const fn (context: *anyopaque) void = null,
+    on_history_changed: ?*const fn (context: *anyopaque, count: usize) void = null,
 };
 
 var current_sink: ?EventSink = null;
@@ -85,6 +87,14 @@ pub fn emitTabsChanged(tabs: []const TabSnapshot) void {
     }
 }
 
+pub fn emitHistoryChanged(count: usize) void {
+    if (current_chrome_sink) |sink| {
+        if (sink.on_history_changed) |callback| {
+            callback(sink.context, count);
+        }
+    }
+}
+
 pub fn emitAppCloseRequested() void {
     if (current_chrome_sink) |sink| {
         if (sink.on_app_close_requested) |callback| {
@@ -113,6 +123,14 @@ pub fn emitInternalPageReloadRequested(source_handle: ?*anyopaque, url: []const 
     if (current_sink) |sink| {
         if (sink.on_internal_page_reload_requested) |callback| {
             callback(sink.context, source_handle, url);
+        }
+    }
+}
+
+pub fn emitHistoryClearRequested(source_handle: ?*anyopaque) void {
+    if (current_sink) |sink| {
+        if (sink.on_history_clear_requested) |callback| {
+            callback(sink.context, source_handle);
         }
     }
 }

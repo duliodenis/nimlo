@@ -75,10 +75,12 @@ pub const Browser = struct {
             .on_new_tab_requested = handleNewTabRequested,
             .on_url_open_requested = handleUrlOpenRequested,
             .on_internal_page_reload_requested = handleInternalPageReloadRequested,
+            .on_history_clear_requested = handleHistoryClearRequested,
             .on_tab_activated_requested = handleTabActivatedRequested,
             .on_tab_closed_requested = handleTabClosedRequested,
         });
         self.publishTabsChanged();
+        self.publishHistoryChanged();
     }
 
     pub fn deinit(self: *Browser) void {
@@ -126,6 +128,7 @@ pub const Browser = struct {
             const dir = self.history_persistence_dir orelse std.Io.Dir.cwd();
             self.history.saveToFile(dir, std.Options.debug_io, path) catch return;
         }
+        self.publishHistoryChanged();
     }
 
     fn nextHistoryTimestamp(self: *Browser) i64 {
@@ -164,6 +167,29 @@ pub const Browser = struct {
 
         self.loadTab(tab.*) catch return;
         self.publishTabsChanged();
+    }
+
+    fn handleHistoryClearRequested(context: *anyopaque, source_handle: ?*anyopaque) void {
+        const self: *Browser = @ptrCast(@alignCast(context));
+        self.clearHistory() catch return;
+
+        const tab = self.tabs.findTabByWebView(source_handle) orelse self.tabs.activeTab() orelse return;
+        if (std.mem.eql(u8, tab.current_url, "nimlo://history")) {
+            self.loadTab(tab.*) catch return;
+        }
+    }
+
+    pub fn clearHistory(self: *Browser) !void {
+        self.next_history_timestamp = 0;
+        if (self.history_persistence_path) |path| {
+            const dir = self.history_persistence_dir orelse std.Io.Dir.cwd();
+            try self.history.clearAndSave(dir, std.Options.debug_io, path);
+            self.publishHistoryChanged();
+            return;
+        }
+
+        self.history.clear();
+        self.publishHistoryChanged();
     }
 
     fn openOrActivateUrl(self: *Browser, url: []const u8) !void {
@@ -277,6 +303,10 @@ pub const Browser = struct {
         webview_events.emitTabsChanged(self.last_published_tabs.items);
     }
 
+    fn publishHistoryChanged(self: *Browser) void {
+        webview_events.emitHistoryChanged(self.history.entries().len);
+    }
+
     fn currentTabsMatchLastPublished(self: *Browser) bool {
         if (self.tabs.len() != self.last_published_tabs.items.len) return false;
 
@@ -306,6 +336,15 @@ fn countTabsChanged(context: *anyopaque, tabs: []const webview_events.TabSnapsho
     _ = tabs;
     const count: *usize = @ptrCast(@alignCast(context));
     count.* += 1;
+}
+
+const HistoryCountRecorder = struct {
+    values: std.ArrayList(usize),
+};
+
+fn recordHistoryCount(context: *anyopaque, count: usize) void {
+    const recorder: *HistoryCountRecorder = @ptrCast(@alignCast(context));
+    recorder.values.append(std.testing.allocator, count) catch return;
 }
 
 test "start creates one active startup tab" {
@@ -475,6 +514,70 @@ test "history persistence loads existing visits and saves new visits" {
     try std.testing.expectEqualStrings("https://example.com/new", loaded.entries()[1].url);
     try std.testing.expect(loaded.entries()[1].visited_at >= 1_000_000_000_000);
     try std.testing.expect(loaded.entries()[1].visited_at >= browser.history.entries()[0].visited_at);
+}
+
+test "clear history request empties memory and persisted file" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var seeded = history.HistoryStore.init(std.testing.allocator);
+    defer seeded.deinit();
+    try seeded.recordVisit("https://example.com/old", "Old", 51);
+    try seeded.saveToFile(tmp_dir.dir, std.testing.io, "history.jsonl");
+
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.enableHistoryPersistenceInDir(tmp_dir.dir, "history.jsonl");
+    try browser.start();
+    webview_events.emitUrlOpenRequested("nimlo://history");
+
+    try std.testing.expectEqual(@as(usize, 1), browser.history.entries().len);
+
+    webview_events.emitHistoryClearRequested(browser.tabs.activeTab().?.webview_handle);
+
+    try std.testing.expectEqual(@as(usize, 0), browser.history.entries().len);
+    try std.testing.expectEqual(@as(i64, 0), browser.next_history_timestamp);
+
+    const contents = try tmp_dir.dir.readFileAlloc(std.testing.io, "history.jsonl", std.testing.allocator, .limited(1024));
+    defer std.testing.allocator.free(contents);
+    try std.testing.expectEqual(@as(usize, 0), contents.len);
+}
+
+test "browser publishes history count changes" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    var recorder = HistoryCountRecorder{ .values = .empty };
+    defer recorder.values.deinit(std.testing.allocator);
+    webview_events.setChromeSink(.{
+        .context = &recorder,
+        .on_tabs_changed = ignoreTabsChanged,
+        .on_history_changed = recordHistoryCount,
+    });
+
+    try browser.start();
+    webview_events.emitNavigation(.{
+        .url = "https://example.com",
+        .title = "Example",
+        .loading_state = .idle,
+    });
+    webview_events.emitHistoryClearRequested(browser.tabs.activeTab().?.webview_handle);
+
+    try std.testing.expectEqual(@as(usize, 3), recorder.values.items.len);
+    try std.testing.expectEqual(@as(usize, 0), recorder.values.items[0]);
+    try std.testing.expectEqual(@as(usize, 1), recorder.values.items[1]);
+    try std.testing.expectEqual(@as(usize, 0), recorder.values.items[2]);
 }
 
 test "duplicate tab snapshots are not republished" {

@@ -118,6 +118,7 @@ var current_tab_scroll_view: Id = null;
 var current_tab_target: Id = null;
 var current_webview_target: Id = null;
 var current_window: Id = null;
+var current_history_count: usize = 0;
 var current_tab_snapshots: std.ArrayList(webview_events.TabSnapshot) = .empty;
 var webview_chrome_states: std.ArrayList(WebViewChromeState) = .empty;
 var favicon_cache: std.ArrayList(CachedFavicon) = .empty;
@@ -243,7 +244,7 @@ fn addToolbar(content_view: Id, bounds: CGRect, webview: Id) !Id {
 }
 
 pub fn configureWebView(webview: Id) void {
-    _ = ensureWebViewChromeState(webview) catch null;
+    _ = ensureWebViewChromeState(webview) catch return;
 
     if (current_webview_target) |target| {
         msg1(void, webview, sel("setNavigationDelegate:"), target);
@@ -332,6 +333,7 @@ fn addTitlebarTabStrip(window_handle: Id, target: Id) !void {
         .context = target.?,
         .on_tabs_changed = handleTabsChanged,
         .on_app_close_requested = handleAppCloseRequested,
+        .on_history_changed = handleHistoryChanged,
     });
     installWindowResizeObserver(window_handle, target);
 
@@ -709,6 +711,10 @@ fn handleAppCloseRequested(_: *anyopaque) void {
     }
 }
 
+fn handleHistoryChanged(_: *anyopaque, count: usize) void {
+    current_history_count = count;
+}
+
 fn tabImage(tab: webview_events.TabSnapshot) Id {
     if (tab.favicon_url.len > 0) {
         if (cachedFaviconImage(tab.favicon_url)) |image| return sizedTabImage(image);
@@ -839,6 +845,7 @@ fn installCommandMenus(target: Id) void {
         addMenuItem(navigate_menu, "Previous Tab", sel("previousTab:"), "\t", NSEventModifierFlagControl | NSEventModifierFlagShift, target);
         msg1(void, navigate_menu, sel("addItem:"), msg0(Id, cls("NSMenuItem"), sel("separatorItem")));
         addMenuItem(navigate_menu, "History", sel("showHistory:"), "y", NSEventModifierFlagCommand, target);
+        addMenuItem(navigate_menu, "Clear History", sel("clearHistory:"), "", 0, target);
         msg1(void, navigate_item, sel("setTitle:"), nsString("Navigate"));
         msg1(void, navigate_item, sel("setSubmenu:"), navigate_menu);
         msg1(void, main_menu, sel("addItem:"), navigate_item);
@@ -958,6 +965,12 @@ fn installAddressBarTargetClass() void {
         target_class,
         c.sel_registerName("showHistory:"),
         @ptrCast(&showHistory),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("clearHistory:"),
+        @ptrCast(&clearHistory),
         "v@:@",
     );
     _ = c.class_addMethod(
@@ -1144,6 +1157,46 @@ fn showHistory(target: Id, _: Sel, _: Id) callconv(.c) void {
     _ = target;
     webview_events.emitUrlOpenRequested("nimlo://history");
     std.debug.print("history page requested.\n", .{});
+}
+
+fn clearHistory(target: Id, _: Sel, _: Id) callconv(.c) void {
+    const webview = getIvar(target, "webView");
+    if (current_history_count == 0) {
+        showHistoryEmptyAlert();
+        return;
+    }
+    if (!confirmClearHistory()) return;
+
+    webview_events.emitHistoryClearRequested(webview);
+    std.debug.print("history clear requested.\n", .{});
+}
+
+fn confirmClearHistory() bool {
+    const alert = msg0(Id, msg0(Id, cls("NSAlert"), sel("alloc")), sel("init"));
+    if (alert == null) return false;
+
+    msg1(void, alert, sel("setMessageText:"), nsString("Clear History?"));
+    msg1(void, alert, sel("setInformativeText:"), nsString("This will remove all saved browsing history from Nimlo."));
+    if (bundledAppIcon()) |icon| {
+        msg1(void, alert, sel("setIcon:"), icon);
+    }
+    _ = msg1(Id, alert, sel("addButtonWithTitle:"), nsString("Keep"));
+    _ = msg1(Id, alert, sel("addButtonWithTitle:"), nsString("Clear History"));
+
+    return msg0(isize, alert, sel("runModal")) == NSModalResponseSecondButtonReturn;
+}
+
+fn showHistoryEmptyAlert() void {
+    const alert = msg0(Id, msg0(Id, cls("NSAlert"), sel("alloc")), sel("init"));
+    if (alert == null) return;
+
+    msg1(void, alert, sel("setMessageText:"), nsString("History is Empty"));
+    msg1(void, alert, sel("setInformativeText:"), nsString("There is no saved browsing history to clear."));
+    if (bundledAppIcon()) |icon| {
+        msg1(void, alert, sel("setIcon:"), icon);
+    }
+    _ = msg1(Id, alert, sel("addButtonWithTitle:"), nsString("OK"));
+    _ = msg0(isize, alert, sel("runModal"));
 }
 
 fn activateTab(_: Id, _: Sel, sender: Id) callconv(.c) void {

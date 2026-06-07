@@ -120,6 +120,11 @@ pub const HistoryStore = struct {
             .data = output.items,
         });
     }
+
+    pub fn clearAndSave(self: *HistoryStore, dir: std.Io.Dir, io: std.Io, path: []const u8) !void {
+        self.clear();
+        try self.saveToFile(dir, io, path);
+    }
 };
 
 pub fn shouldRecordUrl(url: []const u8) bool {
@@ -237,4 +242,21 @@ test "load skips malformed history lines" {
     try std.testing.expectEqual(@as(usize, 1), store.entries().len);
     try std.testing.expectEqualStrings("https://example.com", store.entries()[0].url);
     try std.testing.expectEqual(@as(i64, 21), store.entries()[0].visited_at);
+}
+
+test "clear and save rewrites history file empty" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var store = HistoryStore.init(std.testing.allocator);
+    defer store.deinit();
+    try store.recordVisit("https://example.com", "Example", 31);
+
+    try store.clearAndSave(tmp_dir.dir, std.testing.io, "history.jsonl");
+
+    try std.testing.expectEqual(@as(usize, 0), store.entries().len);
+
+    const contents = try tmp_dir.dir.readFileAlloc(std.testing.io, "history.jsonl", std.testing.allocator, .limited(1024));
+    defer std.testing.allocator.free(contents);
+    try std.testing.expectEqual(@as(usize, 0), contents.len);
 }

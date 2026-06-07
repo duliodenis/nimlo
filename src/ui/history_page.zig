@@ -183,6 +183,7 @@ test "renders empty history state" {
 
     try std.testing.expect(std.mem.indexOf(u8, html, "No history yet") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "0 visits") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "Clear History") == null);
 }
 
 test "renders entries newest first and escapes content" {
@@ -197,6 +198,8 @@ test "renders entries newest first and escapes content" {
     const first_index = std.mem.indexOf(u8, html, "First").?;
     try std.testing.expect(second_index < first_index);
     try std.testing.expect(std.mem.indexOf(u8, html, "https://example.com/?q=&lt;tag&gt;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "Clear History") == null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "nimlo.internal/history/clear") == null);
 }
 
 test "does not create links for non-web schemes" {

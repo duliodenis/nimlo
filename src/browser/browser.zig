@@ -120,12 +120,22 @@ pub const Browser = struct {
         if (tab.is_private) return;
         if (!history.shouldRecordUrl(tab.current_url)) return;
 
-        self.next_history_timestamp += 1;
-        self.history.recordVisit(tab.current_url, tab.title, self.next_history_timestamp) catch return;
+        const visited_at = self.nextHistoryTimestamp();
+        self.history.recordVisit(tab.current_url, tab.title, visited_at) catch return;
         if (self.history_persistence_path) |path| {
             const dir = self.history_persistence_dir orelse std.Io.Dir.cwd();
             self.history.saveToFile(dir, std.Options.debug_io, path) catch return;
         }
+    }
+
+    fn nextHistoryTimestamp(self: *Browser) i64 {
+        const now_ms = std.Io.Clock.real.now(std.Options.debug_io).toMilliseconds();
+        if (now_ms > self.next_history_timestamp) {
+            self.next_history_timestamp = now_ms;
+        } else {
+            self.next_history_timestamp += 1;
+        }
+        return self.next_history_timestamp;
     }
 
     fn handleNewTabRequested(context: *anyopaque) void {
@@ -463,7 +473,8 @@ test "history persistence loads existing visits and saves new visits" {
 
     try std.testing.expectEqual(@as(usize, 2), loaded.entries().len);
     try std.testing.expectEqualStrings("https://example.com/new", loaded.entries()[1].url);
-    try std.testing.expectEqual(@as(i64, 42), loaded.entries()[1].visited_at);
+    try std.testing.expect(loaded.entries()[1].visited_at >= 1_000_000_000_000);
+    try std.testing.expect(loaded.entries()[1].visited_at >= browser.history.entries()[0].visited_at);
 }
 
 test "duplicate tab snapshots are not republished" {

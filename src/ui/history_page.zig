@@ -24,7 +24,7 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\    .search{width:min(360px,44vw);height:34px;border:1px solid var(--line);border-radius:6px;background:var(--field);color:var(--text);padding:0 11px;font:inherit}
         \\    .search:focus{outline:2px solid color-mix(in srgb,var(--accent) 28%,transparent);border-color:var(--accent)}
         \\    .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
-        \\    .row{display:grid;grid-template-columns:minmax(0,1fr) 90px;gap:18px;padding:13px 16px;border-top:1px solid var(--line);align-items:center}
+        \\    .row{display:grid;grid-template-columns:minmax(0,1fr) 180px;gap:18px;padding:13px 16px;border-top:1px solid var(--line);align-items:center}
         \\    .row:first-child{border-top:0}
         \\    .title{display:block;color:var(--text);font-weight:550;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
         \\    a.title:hover{text-decoration:underline;text-underline-offset:3px}
@@ -69,6 +69,23 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\    const rows = [...document.querySelectorAll(".row")];
         \\    const count = document.getElementById("count");
         \\    const label = (value) => `${value} ${value === 1 ? "visit" : "visits"}`;
+        \\    const formatVisitedAt = (value) => {
+        \\      if (!Number.isFinite(value) || value < 1000000000000) return null;
+        \\      const date = new Date(value);
+        \\      if (Number.isNaN(date.getTime())) return null;
+        \\      const now = new Date();
+        \\      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+        \\      const startOfVisitedDay = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+        \\      const dayDelta = Math.round((startOfToday - startOfVisitedDay) / 86400000);
+        \\      const time = new Intl.DateTimeFormat([], { hour: "numeric", minute: "2-digit" }).format(date);
+        \\      if (dayDelta === 0) return `Today, ${time}`;
+        \\      if (dayDelta === 1) return `Yesterday, ${time}`;
+        \\      return new Intl.DateTimeFormat([], { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }).format(date);
+        \\    };
+        \\    document.querySelectorAll("time[data-visited-at]").forEach((node) => {
+        \\      const formatted = formatVisitedAt(Number.parseInt(node.dataset.visitedAt, 10));
+        \\      if (formatted) node.textContent = formatted;
+        \\    });
         \\    search.addEventListener("input", () => {
         \\      const query = search.value.trim().toLowerCase();
         \\      let visible = 0;
@@ -108,10 +125,14 @@ fn appendEntry(html: *std.ArrayList(u8), allocator: std.mem.Allocator, entry: hi
 
     try html.appendSlice(allocator, "<div class=\"url\">");
     try appendEscapedHtml(html, allocator, entry.url);
-    try html.appendSlice(allocator, "</div></div><time>");
-    const visited = try std.fmt.allocPrint(allocator, "Visit {d}", .{entry.visited_at});
+    try html.appendSlice(allocator, "</div></div><time data-visited-at=\"");
+    const visited = try std.fmt.allocPrint(allocator, "{d}", .{entry.visited_at});
     defer allocator.free(visited);
     try html.appendSlice(allocator, visited);
+    try html.appendSlice(allocator, "\">");
+    const label = try visitedLabel(allocator, entry.visited_at);
+    defer allocator.free(label);
+    try appendEscapedHtml(html, allocator, label);
     try html.appendSlice(allocator, "</time></article>");
 }
 
@@ -123,6 +144,18 @@ fn appendCount(html: *std.ArrayList(u8), allocator: std.mem.Allocator, count: us
     const text = try std.fmt.allocPrint(allocator, "{d} {s}", .{ count, if (count == 1) "visit" else "visits" });
     defer allocator.free(text);
     try html.appendSlice(allocator, text);
+}
+
+fn visitedLabel(allocator: std.mem.Allocator, visited_at: i64) ![]const u8 {
+    if (isLegacyVisitValue(visited_at)) {
+        return std.fmt.allocPrint(allocator, "Visit {d}", .{visited_at});
+    }
+
+    return std.fmt.allocPrint(allocator, "{d}", .{visited_at});
+}
+
+fn isLegacyVisitValue(visited_at: i64) bool {
+    return visited_at > 0 and visited_at < 1_000_000_000_000;
 }
 
 fn appendEscapedHtml(output: *std.ArrayList(u8), allocator: std.mem.Allocator, text: []const u8) !void {
@@ -175,4 +208,17 @@ test "does not create links for non-web schemes" {
 
     try std.testing.expect(std.mem.indexOf(u8, html, "<span class=\"title\">Bad Link</span>") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "href=\"javascript:") == null);
+}
+
+test "renders legacy and real visited timestamps" {
+    const entries = [_]history.HistoryEntry{
+        .{ .url = "https://legacy.example", .title = "Legacy", .visited_at = 7 },
+        .{ .url = "https://time.example", .title = "Time", .visited_at = 1_799_999_999_000 },
+    };
+    const html = try render(std.testing.allocator, &entries);
+    defer std.testing.allocator.free(html);
+
+    try std.testing.expect(std.mem.indexOf(u8, html, "Visit 7") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "data-visited-at=\"1799999999000\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "formatVisitedAt") != null);
 }

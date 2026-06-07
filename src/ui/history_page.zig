@@ -21,8 +21,13 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\    header{display:flex;gap:18px;align-items:center;justify-content:space-between;margin-bottom:18px}
         \\    h1{font-size:22px;line-height:1.2;margin:0;font-weight:650;letter-spacing:0}
         \\    .count{color:var(--muted);font-size:13px;margin-top:4px}
+        \\    .actions{display:flex;gap:10px;align-items:center}
         \\    .search{width:min(360px,44vw);height:34px;border:1px solid var(--line);border-radius:6px;background:var(--field);color:var(--text);padding:0 11px;font:inherit}
         \\    .search:focus{outline:2px solid color-mix(in srgb,var(--accent) 28%,transparent);border-color:var(--accent)}
+        \\    .clear{display:inline-flex;height:34px;border:1px solid #b42318;border-radius:6px;background:transparent;color:#b42318;padding:0 12px;font:inherit;font-weight:600;white-space:nowrap;align-items:center;text-decoration:none}
+        \\    .clear:hover{background:color-mix(in srgb,#b42318 10%,transparent)}
+        \\    .clear.disabled{opacity:.45;pointer-events:none}
+        \\    @media (prefers-color-scheme:dark){.clear{border-color:#f97066;color:#f97066}.clear:hover{background:color-mix(in srgb,#f97066 14%,transparent)}}
         \\    .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
         \\    .row{display:grid;grid-template-columns:minmax(0,1fr) 180px;gap:18px;padding:13px 16px;border-top:1px solid var(--line);align-items:center}
         \\    .row:first-child{border-top:0}
@@ -32,7 +37,7 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\    time{color:var(--muted);font-size:12px;text-align:right;white-space:nowrap}
         \\    .empty{padding:44px 16px;text-align:center;color:var(--muted)}
         \\    .hidden{display:none}
-        \\    @media (max-width:640px){main{padding:18px}header{display:block}.search{width:100%;margin-top:14px}.row{grid-template-columns:1fr;gap:6px}time{text-align:left}}
+        \\    @media (max-width:640px){main{padding:18px}header{display:block}.actions{margin-top:14px}.search{width:100%;min-width:0}.row{grid-template-columns:1fr;gap:6px}time{text-align:left}}
         \\  </style>
         \\</head>
         \\<body>
@@ -46,7 +51,16 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
     try html.appendSlice(allocator,
         \\</div>
         \\      </div>
-        \\      <input class="search" id="search" type="search" placeholder="Search history" autocomplete="off">
+        \\      <div class="actions">
+        \\        <input class="search" id="search" type="search" placeholder="Search history" autocomplete="off">
+        \\        <a class="clear
+    );
+    if (entries.len == 0) {
+        try html.appendSlice(allocator, " disabled");
+    }
+    try html.appendSlice(allocator,
+        \\" href="https://nimlo.internal/history/clear">Clear History</a>
+        \\      </div>
         \\    </header>
         \\    <section class="panel" id="history">
     );
@@ -183,7 +197,8 @@ test "renders empty history state" {
 
     try std.testing.expect(std.mem.indexOf(u8, html, "No history yet") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "0 visits") != null);
-    try std.testing.expect(std.mem.indexOf(u8, html, "Clear History") == null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "Clear History") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "class=\"clear disabled\"") != null);
 }
 
 test "renders entries newest first and escapes content" {
@@ -198,8 +213,9 @@ test "renders entries newest first and escapes content" {
     const first_index = std.mem.indexOf(u8, html, "First").?;
     try std.testing.expect(second_index < first_index);
     try std.testing.expect(std.mem.indexOf(u8, html, "https://example.com/?q=&lt;tag&gt;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, html, "Clear History") == null);
-    try std.testing.expect(std.mem.indexOf(u8, html, "nimlo.internal/history/clear") == null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "Clear History") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "https://nimlo.internal/history/clear") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "class=\"clear disabled\"") == null);
 }
 
 test "does not create links for non-web schemes" {

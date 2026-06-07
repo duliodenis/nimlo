@@ -118,7 +118,6 @@ var current_tab_scroll_view: Id = null;
 var current_tab_target: Id = null;
 var current_webview_target: Id = null;
 var current_window: Id = null;
-var current_history_count: usize = 0;
 var current_tab_snapshots: std.ArrayList(webview_events.TabSnapshot) = .empty;
 var webview_chrome_states: std.ArrayList(WebViewChromeState) = .empty;
 var favicon_cache: std.ArrayList(CachedFavicon) = .empty;
@@ -333,7 +332,8 @@ fn addTitlebarTabStrip(window_handle: Id, target: Id) !void {
         .context = target.?,
         .on_tabs_changed = handleTabsChanged,
         .on_app_close_requested = handleAppCloseRequested,
-        .on_history_changed = handleHistoryChanged,
+        .on_history_empty_requested = handleHistoryEmptyRequested,
+        .on_history_clear_confirmation_requested = handleHistoryClearConfirmationRequested,
     });
     installWindowResizeObserver(window_handle, target);
 
@@ -711,8 +711,13 @@ fn handleAppCloseRequested(_: *anyopaque) void {
     }
 }
 
-fn handleHistoryChanged(_: *anyopaque, count: usize) void {
-    current_history_count = count;
+fn handleHistoryEmptyRequested(_: *anyopaque) void {
+    showHistoryEmptyAlert();
+}
+
+fn handleHistoryClearConfirmationRequested(_: *anyopaque, source_handle: ?*anyopaque) void {
+    if (!confirmClearHistory()) return;
+    webview_events.emitHistoryClearConfirmedRequested(source_handle);
 }
 
 fn tabImage(tab: webview_events.TabSnapshot) Id {
@@ -1161,12 +1166,6 @@ fn showHistory(target: Id, _: Sel, _: Id) callconv(.c) void {
 
 fn clearHistory(target: Id, _: Sel, _: Id) callconv(.c) void {
     const webview = getIvar(target, "webView");
-    if (current_history_count == 0) {
-        showHistoryEmptyAlert();
-        return;
-    }
-    if (!confirmClearHistory()) return;
-
     webview_events.emitHistoryClearRequested(webview);
     std.debug.print("history clear requested.\n", .{});
 }
@@ -1522,6 +1521,14 @@ fn decideNavigationPolicy(_: Id, _: Sel, webview: Id, navigation_action: Id, dec
     const absolute = if (url != null) msg0(Id, url, sel("absoluteString")) else null;
     const raw = if (absolute != null) msg0(?[*:0]const u8, absolute, sel("UTF8String")) else null;
     const target_url = if (raw) |value| std.mem.span(value) else "";
+
+    if (webViewIsInternal(webview) and std.mem.eql(u8, target_url, "https://nimlo.internal/history/clear")) {
+        if (current_webview_target) |target| {
+            clearHistory(target, sel("clearHistory:"), @as(Id, null));
+        }
+        decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
+        return;
+    }
 
     if (webViewIsInternal(webview) and isExternalWebUrl(target_url)) {
         webview_events.emitUrlOpenRequested(target_url);

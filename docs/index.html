@@ -8,6 +8,8 @@
             name="description"
             content="Nimlo is an open-source browser prototype built in Zig to give people a lighter, private, user-controlled choice for the web."
         />
+        <link rel="icon" href="assets/nimlo-icon.jpg" type="image/jpeg" />
+        <link rel="apple-touch-icon" href="assets/nimlo-icon.jpg" />
         <style>
             :root {
                 color-scheme: light;
@@ -96,6 +98,25 @@
                 color: #ffffff;
             }
 
+            .nav-links .download-link {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                min-height: 36px;
+                padding: 0 14px;
+                border: 1px solid rgba(255, 253, 244, 0.42);
+                border-radius: 8px;
+                background: #fffdf4;
+                color: #172018;
+                box-shadow: 0 14px 28px rgba(0, 0, 0, 0.18);
+            }
+
+            .nav-links .download-link:hover {
+                color: #172018;
+                background: #ffffff;
+                border-color: rgba(255, 255, 255, 0.8);
+            }
+
             .hero-inner {
                 width: min(100%, 1180px);
                 margin: 0 auto;
@@ -145,38 +166,22 @@
                 opacity: 0;
                 padding-bottom: 0.08em;
                 transform: translateY(0.3em);
-                animation: rotateHeroWord 9s cubic-bezier(0.16, 1, 0.3, 1)
-                    infinite;
+                transition:
+                    opacity 420ms cubic-bezier(0.16, 1, 0.3, 1),
+                    transform 420ms cubic-bezier(0.16, 1, 0.3, 1);
                 will-change: opacity, transform;
             }
 
-            .word-rotator span:nth-child(1) {
-                animation-delay: 0s;
+            .word-rotator.is-running span.active,
+            .word-rotator span.active,
+            .word-rotator:not(.is-running) span:first-child {
+                opacity: 1;
+                transform: none;
             }
 
-            .word-rotator span:nth-child(2) {
-                animation-delay: 3s;
-            }
-
-            .word-rotator span:nth-child(3) {
-                animation-delay: 6s;
-            }
-
-            @keyframes rotateHeroWord {
-                0% {
-                    opacity: 0;
-                    transform: translateY(0.3em);
-                }
-                7%,
-                28% {
-                    opacity: 1;
-                    transform: translateY(0);
-                }
-                35%,
-                100% {
-                    opacity: 0;
-                    transform: translateY(-0.3em);
-                }
+            .word-rotator span.exiting {
+                opacity: 0;
+                transform: translateY(-0.3em);
             }
 
             .lead {
@@ -230,11 +235,6 @@
                 border: 1px solid rgba(23, 32, 24, 0.22);
                 color: #172018;
                 background: rgba(255, 253, 244, 0.64);
-            }
-
-            .next-hint {
-                min-height: 8vh;
-                background: #f6f7f2;
             }
 
             .section {
@@ -464,6 +464,11 @@
                     font-size: 0.88rem;
                 }
 
+                .nav-links .download-link {
+                    min-height: 34px;
+                    padding: 0 12px;
+                }
+
                 .hero-inner {
                     padding-top: 48px;
                 }
@@ -500,28 +505,29 @@
                     <a href="#why">Why</a>
                     <a href="#status">Status</a>
                     <a href="https://github.com/duliodenis/nimlo">GitHub</a>
-                    <a href="#download">Download</a>
+                    <a class="download-link" href="#download">Download</a>
                 </div>
             </nav>
 
             <div class="hero-inner">
                 <div class="hero-copy">
-                    <span class="status">Open-source browser prototype</span>
+                    <span class="status">Open-source browser</span>
                     <h1
-                        aria-label="Browse lightly. Browse privately. Browse quickly."
+                        aria-label="Browse lightly. Browse privately. Browse quickly. Browse AI-free."
                     >
                         Browse
                         <span class="word-rotator" aria-hidden="true">
                             <span>lightly.</span>
                             <span>privately.</span>
                             <span>quickly.</span>
+                            <span>AI-free.</span>
                         </span>
                     </h1>
                     <p class="lead">
                         Nimlo exists to give the world a choice: a browser
                         shaped around speed, privacy, local control, and the
                         simple pleasure of exploring the web without corporate
-                        clutter.
+                        clutter. The way the web used to be.
                     </p>
                     <div class="actions">
                         <a
@@ -530,14 +536,12 @@
                             >Download for Mac</a
                         >
                         <a class="button secondary" href="#status"
-                            >See prototype status</a
+                            >See browser status</a
                         >
                     </div>
                 </div>
             </div>
         </header>
-
-        <div class="next-hint" aria-hidden="true"></div>
 
         <main>
             <section id="download" class="section download">
@@ -546,14 +550,15 @@
                         <p class="download-kicker">
                             Nimlo 0.1.0 for Apple Silicon
                         </p>
-                        <h2>Download the first macOS prototype.</h2>
+                        <h2>Download the macOS edition.</h2>
                         <p>
                             Try the current Nimlo app bundle as a DMG for Apple
                             Silicon Macs. This is an experimental release, not a
                             production browser replacement.
                         </p>
                         <p class="download-note">
-                            Requires macOS 13 or newer. Built for arm64.
+                            Requires macOS 13 or newer. Built for M-Series arm64
+                            Macs.
                         </p>
                     </div>
                     <div class="download-actions">
@@ -574,7 +579,7 @@
             <section id="why" class="section">
                 <div class="section-inner split">
                     <div>
-                        <h2>The web deserves more than one shape.</h2>
+                        <h2>The web deserves more than two choices.</h2>
                         <p>
                             Modern browsers are powerful, but they have also
                             become enormous platforms for ads, accounts,
@@ -641,9 +646,9 @@
                 <div class="section-inner">
                     <h2>Prototype status.</h2>
                     <p>
-                        Nimlo is not a production browser yet. The macOS
-                        prototype currently focuses on a fast, minimal shell
-                        with reliable tab and WebView lifecycle behavior.
+                        Nimlo is not a production browser yet. The macOS edition
+                        currently focuses on a fast, minimal shell with reliable
+                        tab and WebView lifecycle behavior.
                     </p>
                     <ul class="checks">
                         <li class="reveal" style="--reveal-delay: 0ms">
@@ -758,9 +763,36 @@
             </div>
         </footer>
         <script>
+            const reducedMotion = window.matchMedia(
+                "(prefers-reduced-motion: reduce)",
+            ).matches;
+            const wordSlotMs = 3400;
+            const wordTransitionMs = 420;
+
+            document.querySelectorAll(".word-rotator").forEach((rotator) => {
+                const words = [...rotator.querySelectorAll("span")];
+                if (reducedMotion || words.length <= 1) return;
+
+                let activeIndex = 0;
+                rotator.classList.add("is-running");
+                words[activeIndex].classList.add("active");
+
+                window.setInterval(() => {
+                    const outgoing = words[activeIndex];
+                    outgoing.classList.remove("active");
+                    outgoing.classList.add("exiting");
+
+                    window.setTimeout(() => {
+                        outgoing.classList.remove("exiting");
+                        activeIndex = (activeIndex + 1) % words.length;
+                        words[activeIndex].classList.add("active");
+                    }, wordTransitionMs);
+                }, wordSlotMs);
+            });
+
             const revealItems = document.querySelectorAll(".reveal");
 
-            if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+            if (reducedMotion) {
                 revealItems.forEach((item) => item.classList.add("visible"));
             } else {
                 const observer = new IntersectionObserver(

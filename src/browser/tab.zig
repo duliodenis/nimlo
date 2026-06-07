@@ -31,7 +31,7 @@ pub const Tab = struct {
     pub fn init(id: TabId, start_url: []const u8, is_private: bool) Tab {
         return .{
             .id = id,
-            .title = if (std.mem.eql(u8, start_url, "nimlo://about")) "About Nimlo" else "Nimlo",
+            .title = initialTitle(start_url),
             .current_url = start_url,
             .favicon_url = "",
             .loading_state = .idle,
@@ -71,6 +71,7 @@ pub const Tab = struct {
 fn fallbackTitle(url: []const u8) []const u8 {
     if (std.mem.eql(u8, url, "nimlo://start")) return "Nimlo";
     if (std.mem.eql(u8, url, "nimlo://about")) return "About Nimlo";
+    if (std.mem.eql(u8, url, "nimlo://history")) return "History";
 
     const scheme_end = std.mem.indexOf(u8, url, "://") orelse return url;
     const host_start = scheme_end + 3;
@@ -78,6 +79,12 @@ fn fallbackTitle(url: []const u8) []const u8 {
     if (host_start >= host_end) return url;
 
     return url[host_start..host_end];
+}
+
+fn initialTitle(url: []const u8) []const u8 {
+    if (std.mem.eql(u8, url, "nimlo://about")) return "About Nimlo";
+    if (std.mem.eql(u8, url, "nimlo://history")) return "History";
+    return "Nimlo";
 }
 
 test "default tab state" {
@@ -99,6 +106,13 @@ test "about tab title" {
 
     try std.testing.expectEqualStrings("About Nimlo", tab.title);
     try std.testing.expectEqualStrings("nimlo://about", tab.current_url);
+}
+
+test "history tab title" {
+    const tab = Tab.init(8, "nimlo://history", false);
+
+    try std.testing.expectEqualStrings("History", tab.title);
+    try std.testing.expectEqualStrings("nimlo://history", tab.current_url);
 }
 
 test "private tab state" {

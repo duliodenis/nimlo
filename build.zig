@@ -132,6 +132,15 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_history_tests = b.addRunArtifact(history_tests);
+    const history_page_tests = b.addTest(.{
+        .name = "history-page-tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/history_page_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_history_page_tests = b.addRunArtifact(history_page_tests);
     const browser_tests = b.addTest(.{
         .name = "browser-tests",
         .root_module = b.createModule(.{
@@ -163,5 +172,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_tab_tests.step);
     test_step.dependOn(&run_tab_manager_tests.step);
     test_step.dependOn(&run_history_tests.step);
+    test_step.dependOn(&run_history_page_tests.step);
     test_step.dependOn(&run_browser_tests.step);
 }

@@ -155,6 +155,10 @@ pub fn noteInternalLoadForUrl(webview: Id, url: []const u8) void {
         noteInternalPageLoad(webview, "nimlo://about", "About Nimlo", "info.circle", "About Nimlo");
         return;
     }
+    if (std.mem.eql(u8, url, "nimlo://history")) {
+        noteInternalPageLoad(webview, "nimlo://history", "History", "clock.arrow.circlepath", "History");
+        return;
+    }
 
     noteInternalPageLoad(webview, "nimlo://start", "Nimlo", "sparkles", "Nimlo");
 }
@@ -826,6 +830,8 @@ fn installCommandMenus(target: Id) void {
         addMenuItem(navigate_menu, "Focus Address Bar", sel("focusAddressBar:"), "l", NSEventModifierFlagCommand, target);
         addMenuItem(navigate_menu, "Next Tab", sel("nextTab:"), "\t", NSEventModifierFlagControl, target);
         addMenuItem(navigate_menu, "Previous Tab", sel("previousTab:"), "\t", NSEventModifierFlagControl | NSEventModifierFlagShift, target);
+        msg1(void, navigate_menu, sel("addItem:"), msg0(Id, cls("NSMenuItem"), sel("separatorItem")));
+        addMenuItem(navigate_menu, "History", sel("showHistory:"), "y", NSEventModifierFlagCommand, target);
         msg1(void, navigate_item, sel("setTitle:"), nsString("Navigate"));
         msg1(void, navigate_item, sel("setSubmenu:"), navigate_menu);
         msg1(void, main_menu, sel("addItem:"), navigate_item);
@@ -939,6 +945,12 @@ fn installAddressBarTargetClass() void {
         target_class,
         c.sel_registerName("aboutNimlo:"),
         @ptrCast(&aboutNimlo),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("showHistory:"),
+        @ptrCast(&showHistory),
         "v@:@",
     );
     _ = c.class_addMethod(
@@ -1119,6 +1131,12 @@ fn aboutNimlo(target: Id, _: Sel, _: Id) callconv(.c) void {
     _ = target;
     webview_events.emitUrlOpenRequested("nimlo://about");
     std.debug.print("about page requested.\n", .{});
+}
+
+fn showHistory(target: Id, _: Sel, _: Id) callconv(.c) void {
+    _ = target;
+    webview_events.emitUrlOpenRequested("nimlo://history");
+    std.debug.print("history page requested.\n", .{});
 }
 
 fn activateTab(_: Id, _: Sel, sender: Id) callconv(.c) void {

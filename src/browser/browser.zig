@@ -5,6 +5,7 @@ const private_mode = @import("../privacy/private_mode.zig");
 const tab_manager = @import("tab_manager.zig");
 const tab_model = @import("tab.zig");
 const about_page = @import("../ui/about_page.zig");
+const history_page = @import("../ui/history_page.zig");
 const start_page = @import("../ui/start_page.zig");
 const webview = @import("../webview/webview_adapter.zig");
 const webview_events = @import("../webview/webview_events.zig");
@@ -190,6 +191,13 @@ pub const Browser = struct {
         }
         if (std.mem.eql(u8, tab.current_url, "nimlo://about")) {
             try self.webview_adapter.loadHtml(about_page.html, tab.current_url);
+            return;
+        }
+        if (std.mem.eql(u8, tab.current_url, "nimlo://history")) {
+            const html = try history_page.render(self.allocator, self.history.entries());
+            defer self.allocator.free(html);
+
+            try self.webview_adapter.loadHtml(html, tab.current_url);
             return;
         }
 

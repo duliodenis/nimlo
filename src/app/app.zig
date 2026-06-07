@@ -18,6 +18,9 @@ pub fn run() !void {
     var engine = webview.WebViewAdapter.init();
     var core = browser.Browser.init(config, privacy, &engine);
     defer core.deinit();
+    const history_path = try defaultHistoryPersistencePath(std.heap.page_allocator);
+    defer std.heap.page_allocator.free(history_path);
+    try core.enableHistoryPersistence(history_path);
 
     // TODO(app shell): add browser chrome, commands, menus, and shortcuts.
     // TODO(webview): replace the scaffold with a real system WebView mount.
@@ -40,4 +43,12 @@ fn loadHomepage(engine: *webview.WebViewAdapter, homepage_url: []const u8) !void
     }
 
     try engine.load(homepage_url);
+}
+
+fn defaultHistoryPersistencePath(allocator: std.mem.Allocator) ![]u8 {
+    if (std.c.getenv("HOME")) |home_z| {
+        return std.fmt.allocPrint(allocator, "{s}/.nimlo-history.jsonl", .{std.mem.span(home_z)});
+    }
+
+    return allocator.dupe(u8, ".nimlo-history.jsonl");
 }

@@ -704,10 +704,9 @@ fn handleTabsChanged(_: *anyopaque, tabs: []const webview_events.TabSnapshot) vo
 }
 
 fn handleAppCloseRequested(_: *anyopaque) void {
-    const app = msg0(Id, cls("NSApplication"), sel("sharedApplication"));
-    if (app == null) return;
-
-    msg1(void, app, sel("terminate:"), @as(Id, null));
+    if (current_window) |window| {
+        msg0(void, window, sel("close"));
+    }
 }
 
 fn tabImage(tab: webview_events.TabSnapshot) Id {
@@ -1197,15 +1196,17 @@ fn reload(target: Id, _: Sel, _: Id) callconv(.c) void {
 
     if (webViewIsInternal(webview)) {
         if (activeInternalPageUrl(webview)) |url| {
-            if (std.mem.eql(u8, url, "nimlo://about")) {
+            if (std.mem.eql(u8, url, "nimlo://start")) {
+                loadInternalStartPage(webview) catch return;
+            } else if (std.mem.eql(u8, url, "nimlo://about")) {
                 loadInternalAboutPage(webview) catch return;
             } else {
-                loadInternalStartPage(webview) catch return;
+                webview_events.emitInternalPageReloadRequested(webview, url);
             }
         } else {
             loadInternalStartPage(webview) catch return;
         }
-        std.debug.print("reloaded internal start page.\n", .{});
+        std.debug.print("reloaded internal page.\n", .{});
         return;
     }
 

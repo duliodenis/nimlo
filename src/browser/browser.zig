@@ -17,6 +17,8 @@ pub const Browser = struct {
     tabs: tab_manager.TabManager,
     history: history.HistoryStore,
     next_history_timestamp: i64,
+    history_persistence_dir: ?std.Io.Dir,
+    history_persistence_path: ?[]const u8,
     webview_adapter: *webview.WebViewAdapter,
     last_published_tabs: std.ArrayList(webview_events.TabSnapshot),
 
@@ -34,9 +36,29 @@ pub const Browser = struct {
             .tabs = tab_manager.TabManager.init(allocator),
             .history = history.HistoryStore.init(allocator),
             .next_history_timestamp = 0,
+            .history_persistence_dir = null,
+            .history_persistence_path = null,
             .webview_adapter = adapter,
             .last_published_tabs = .empty,
         };
+    }
+
+    pub fn enableHistoryPersistence(self: *Browser, path: []const u8) !void {
+        try self.enableHistoryPersistenceInDir(std.Io.Dir.cwd(), path);
+    }
+
+    pub fn enableHistoryPersistenceInDir(self: *Browser, dir: std.Io.Dir, path: []const u8) !void {
+        const owned_path = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(owned_path);
+
+        try self.history.loadFromFile(dir, std.Options.debug_io, owned_path);
+
+        if (self.history_persistence_path) |old_path| {
+            self.allocator.free(old_path);
+        }
+        self.history_persistence_dir = dir;
+        self.history_persistence_path = owned_path;
+        self.next_history_timestamp = self.history.maxVisitedAt();
     }
 
     pub fn start(self: *Browser) !void {
@@ -52,6 +74,7 @@ pub const Browser = struct {
             .on_navigation = handleNavigationEvent,
             .on_new_tab_requested = handleNewTabRequested,
             .on_url_open_requested = handleUrlOpenRequested,
+            .on_internal_page_reload_requested = handleInternalPageReloadRequested,
             .on_tab_activated_requested = handleTabActivatedRequested,
             .on_tab_closed_requested = handleTabClosedRequested,
         });
@@ -63,6 +86,9 @@ pub const Browser = struct {
         webview_events.clearChromeSink();
         self.last_published_tabs.deinit(self.allocator);
         self.history.deinit();
+        if (self.history_persistence_path) |path| {
+            self.allocator.free(path);
+        }
         self.tabs.deinit();
     }
 
@@ -96,6 +122,10 @@ pub const Browser = struct {
 
         self.next_history_timestamp += 1;
         self.history.recordVisit(tab.current_url, tab.title, self.next_history_timestamp) catch return;
+        if (self.history_persistence_path) |path| {
+            const dir = self.history_persistence_dir orelse std.Io.Dir.cwd();
+            self.history.saveToFile(dir, std.Options.debug_io, path) catch return;
+        }
     }
 
     fn handleNewTabRequested(context: *anyopaque) void {
@@ -115,6 +145,15 @@ pub const Browser = struct {
     fn handleUrlOpenRequested(context: *anyopaque, url: []const u8) void {
         const self: *Browser = @ptrCast(@alignCast(context));
         self.openOrActivateUrl(url) catch return;
+    }
+
+    fn handleInternalPageReloadRequested(context: *anyopaque, source_handle: ?*anyopaque, url: []const u8) void {
+        const self: *Browser = @ptrCast(@alignCast(context));
+        const tab = self.tabs.findTabByWebView(source_handle) orelse self.tabs.activeTab() orelse return;
+        if (!std.mem.eql(u8, tab.current_url, url)) return;
+
+        self.loadTab(tab.*) catch return;
+        self.publishTabsChanged();
     }
 
     fn openOrActivateUrl(self: *Browser, url: []const u8) !void {
@@ -387,6 +426,44 @@ test "private navigation events are not recorded in history" {
     });
 
     try std.testing.expectEqual(@as(usize, 0), browser.history.entries().len);
+}
+
+test "history persistence loads existing visits and saves new visits" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var seeded = history.HistoryStore.init(std.testing.allocator);
+    defer seeded.deinit();
+    try seeded.recordVisit("https://example.com/old", "Old", 41);
+    try seeded.saveToFile(tmp_dir.dir, std.testing.io, "history.jsonl");
+
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.enableHistoryPersistenceInDir(tmp_dir.dir, "history.jsonl");
+    try browser.start();
+
+    try std.testing.expectEqual(@as(usize, 1), browser.history.entries().len);
+    try std.testing.expectEqual(@as(i64, 41), browser.next_history_timestamp);
+
+    webview_events.emitNavigation(.{
+        .url = "https://example.com/new",
+        .title = "New",
+        .loading_state = .idle,
+    });
+
+    var loaded = history.HistoryStore.init(std.testing.allocator);
+    defer loaded.deinit();
+    try loaded.loadFromFile(tmp_dir.dir, std.testing.io, "history.jsonl");
+
+    try std.testing.expectEqual(@as(usize, 2), loaded.entries().len);
+    try std.testing.expectEqualStrings("https://example.com/new", loaded.entries()[1].url);
+    try std.testing.expectEqual(@as(i64, 42), loaded.entries()[1].visited_at);
 }
 
 test "duplicate tab snapshots are not republished" {

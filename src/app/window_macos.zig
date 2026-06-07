@@ -44,6 +44,8 @@ const NSWindowStyleMaskDefault = NSWindowStyleMaskTitled |
 
 extern "c" fn objc_msgSend() void;
 
+var window_close_approved_for_termination = false;
+
 pub const MacOSWindow = struct {
     title: [:0]const u8,
     width: u32,
@@ -54,7 +56,7 @@ pub const MacOSWindow = struct {
     pub fn create(options: window.WindowOptions) !MacOSWindow {
         const title = try std.heap.page_allocator.dupeZ(u8, options.title);
         const app = try sharedApplication();
-        const handle = try createNativeWindow(title, options.width, options.height);
+        const handle = try createNativeWindow(app, title, options.width, options.height);
 
         return .{
             .title = title,
@@ -100,7 +102,7 @@ fn sharedApplication() !Id {
     return app;
 }
 
-fn createNativeWindow(title: [:0]const u8, width: u32, height: u32) !Id {
+fn createNativeWindow(app: Id, title: [:0]const u8, width: u32, height: u32) !Id {
     const frame = CGRect{
         .origin = .{ .x = 0, .y = 0 },
         .size = .{
@@ -123,6 +125,7 @@ fn createNativeWindow(title: [:0]const u8, width: u32, height: u32) !Id {
 
     msg1(void, handle, sel("setTitle:"), nsString(title));
     msg1(void, handle, sel("setTitleVisibility:"), NSWindowTitleHidden);
+    msg1(void, handle, sel("setDelegate:"), msg0(Id, app, sel("delegate")));
     return handle;
 }
 
@@ -158,6 +161,12 @@ fn installAppDelegateClass() void {
         @ptrCast(&applicationShouldTerminateAfterLastWindowClosed),
         "c@:@",
     );
+    _ = c.class_addMethod(
+        delegate_class,
+        c.sel_registerName("windowShouldClose:"),
+        @ptrCast(&windowShouldClose),
+        "c@:@",
+    );
 
     c.objc_registerClassPair(delegate_class);
 }
@@ -167,7 +176,18 @@ fn applicationShouldTerminateAfterLastWindowClosed(_: Id, _: Sel, _: Id) callcon
 }
 
 fn applicationShouldTerminate(_: Id, _: Sel, _: Id) callconv(.c) isize {
+    if (window_close_approved_for_termination) {
+        window_close_approved_for_termination = false;
+        return NSTerminateNow;
+    }
+
     return if (chrome.confirmQuitIfNeeded()) NSTerminateNow else NSTerminateCancel;
+}
+
+fn windowShouldClose(_: Id, _: Sel, _: Id) callconv(.c) u8 {
+    const should_close = chrome.confirmQuitIfNeeded();
+    window_close_approved_for_termination = should_close;
+    return if (should_close) 1 else 0;
 }
 
 fn cls(name: [:0]const u8) Class {

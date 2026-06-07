@@ -27,6 +27,7 @@ pub const EventSink = struct {
     on_navigation: *const fn (context: *anyopaque, event: NavigationEvent) void,
     on_new_tab_requested: ?*const fn (context: *anyopaque) void = null,
     on_url_open_requested: ?*const fn (context: *anyopaque, url: []const u8) void = null,
+    on_internal_page_reload_requested: ?*const fn (context: *anyopaque, source_handle: ?*anyopaque, url: []const u8) void = null,
     on_tab_activated_requested: ?*const fn (context: *anyopaque, tab_id: u64) void = null,
     on_tab_closed_requested: ?*const fn (context: *anyopaque, tab_id: u64) void = null,
 };
@@ -104,6 +105,14 @@ pub fn emitUrlOpenRequested(url: []const u8) void {
     if (current_sink) |sink| {
         if (sink.on_url_open_requested) |callback| {
             callback(sink.context, url);
+        }
+    }
+}
+
+pub fn emitInternalPageReloadRequested(source_handle: ?*anyopaque, url: []const u8) void {
+    if (current_sink) |sink| {
+        if (sink.on_internal_page_reload_requested) |callback| {
+            callback(sink.context, source_handle, url);
         }
     }
 }

@@ -159,6 +159,11 @@ pub const Browser = struct {
         const self: *Browser = @ptrCast(@alignCast(context));
         const closing_tab = self.tabs.findTab(tab_id) orelse return;
         const closing_handle = closing_tab.webview_handle;
+        if (self.tabs.len() == 1 and std.mem.eql(u8, closing_tab.current_url, "nimlo://start")) {
+            webview_events.emitAppCloseRequested();
+            return;
+        }
+
         if (!self.tabs.closeTab(tab_id)) return;
 
         self.webview_adapter.destroyWebView(closing_handle);
@@ -586,7 +591,7 @@ test "close tab command removes tab and activates adjacent tab" {
     try std.testing.expectEqual(first, browser.tabs.active_tab_id.?);
 }
 
-test "close final tab command creates a fresh startup tab" {
+test "close final non-start tab command creates a fresh startup tab" {
     var adapter = webview.WebViewAdapter.init();
     var browser = Browser.init(
         preferences.Preferences.default(),
@@ -597,10 +602,48 @@ test "close final tab command creates a fresh startup tab" {
 
     try browser.start();
     const original = browser.tabs.active_tab_id.?;
+    browser.tabs.activeTab().?.updateNavigation(.{
+        .current_url = "https://example.com",
+        .title = "Example",
+    });
 
     webview_events.emitTabClosedRequested(original);
 
     try std.testing.expectEqual(@as(usize, 1), browser.tabs.len());
     try std.testing.expect(browser.tabs.active_tab_id.? != original);
+    try std.testing.expectEqualStrings("nimlo://start", browser.tabs.activeTab().?.current_url);
+}
+
+fn countAppCloseRequested(context: *anyopaque) void {
+    const count: *usize = @ptrCast(@alignCast(context));
+    count.* += 1;
+}
+
+fn ignoreTabsChanged(_: *anyopaque, _: []const webview_events.TabSnapshot) void {}
+
+test "close only start tab requests app close without replacing tab" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    var close_request_count: usize = 0;
+    webview_events.setChromeSink(.{
+        .context = &close_request_count,
+        .on_tabs_changed = ignoreTabsChanged,
+        .on_app_close_requested = countAppCloseRequested,
+    });
+
+    try browser.start();
+    const original = browser.tabs.active_tab_id.?;
+
+    webview_events.emitTabClosedRequested(original);
+
+    try std.testing.expectEqual(@as(usize, 1), close_request_count);
+    try std.testing.expectEqual(@as(usize, 1), browser.tabs.len());
+    try std.testing.expectEqual(original, browser.tabs.active_tab_id.?);
     try std.testing.expectEqualStrings("nimlo://start", browser.tabs.activeTab().?.current_url);
 }

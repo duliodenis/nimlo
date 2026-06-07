@@ -34,6 +34,7 @@ pub const EventSink = struct {
 pub const ChromeSink = struct {
     context: *anyopaque,
     on_tabs_changed: *const fn (context: *anyopaque, tabs: []const TabSnapshot) void,
+    on_app_close_requested: ?*const fn (context: *anyopaque) void = null,
 };
 
 var current_sink: ?EventSink = null;
@@ -80,6 +81,14 @@ pub fn emitTabClosedRequested(tab_id: u64) void {
 pub fn emitTabsChanged(tabs: []const TabSnapshot) void {
     if (current_chrome_sink) |sink| {
         sink.on_tabs_changed(sink.context, tabs);
+    }
+}
+
+pub fn emitAppCloseRequested() void {
+    if (current_chrome_sink) |sink| {
+        if (sink.on_app_close_requested) |callback| {
+            callback(sink.context);
+        }
     }
 }
 

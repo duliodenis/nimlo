@@ -331,6 +331,7 @@ fn addTitlebarTabStrip(window_handle: Id, target: Id) !void {
     webview_events.setChromeSink(.{
         .context = target.?,
         .on_tabs_changed = handleTabsChanged,
+        .on_app_close_requested = handleAppCloseRequested,
     });
     installWindowResizeObserver(window_handle, target);
 
@@ -700,6 +701,13 @@ fn handleTabsChanged(_: *anyopaque, tabs: []const webview_events.TabSnapshot) vo
     current_tab_snapshots.clearRetainingCapacity();
     current_tab_snapshots.appendSlice(std.heap.page_allocator, tabs) catch return;
     renderTitlebarTabs(tabs) catch return;
+}
+
+fn handleAppCloseRequested(_: *anyopaque) void {
+    const app = msg0(Id, cls("NSApplication"), sel("sharedApplication"));
+    if (app == null) return;
+
+    msg1(void, app, sel("terminate:"), @as(Id, null));
 }
 
 fn tabImage(tab: webview_events.TabSnapshot) Id {

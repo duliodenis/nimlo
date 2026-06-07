@@ -1,4 +1,5 @@
 const std = @import("std");
+const history = @import("../storage/history.zig");
 const preferences = @import("../storage/preferences.zig");
 const private_mode = @import("../privacy/private_mode.zig");
 const tab_manager = @import("tab_manager.zig");
@@ -13,6 +14,8 @@ pub const Browser = struct {
     preferences: preferences.Preferences,
     private_mode: private_mode.PrivateModeConfig,
     tabs: tab_manager.TabManager,
+    history: history.HistoryStore,
+    next_history_timestamp: i64,
     webview_adapter: *webview.WebViewAdapter,
     last_published_tabs: std.ArrayList(webview_events.TabSnapshot),
 
@@ -28,6 +31,8 @@ pub const Browser = struct {
             .preferences = prefs,
             .private_mode = privacy,
             .tabs = tab_manager.TabManager.init(allocator),
+            .history = history.HistoryStore.init(allocator),
+            .next_history_timestamp = 0,
             .webview_adapter = adapter,
             .last_published_tabs = .empty,
         };
@@ -56,6 +61,7 @@ pub const Browser = struct {
         webview_events.clearSink();
         webview_events.clearChromeSink();
         self.last_published_tabs.deinit(self.allocator);
+        self.history.deinit();
         self.tabs.deinit();
     }
 
@@ -78,7 +84,17 @@ pub const Browser = struct {
             .can_go_back = event.can_go_back,
             .can_go_forward = event.can_go_forward,
         });
+        self.recordHistoryVisit(tab, event.loading_state);
         self.publishTabsChanged();
+    }
+
+    fn recordHistoryVisit(self: *Browser, tab: *tab_model.Tab, loading_state: webview_events.LoadingState) void {
+        if (loading_state != .idle) return;
+        if (tab.is_private) return;
+        if (!history.shouldRecordUrl(tab.current_url)) return;
+
+        self.next_history_timestamp += 1;
+        self.history.recordVisit(tab.current_url, tab.title, self.next_history_timestamp) catch return;
     }
 
     fn handleNewTabRequested(context: *anyopaque) void {
@@ -273,6 +289,9 @@ test "navigation event updates active tab state" {
     try std.testing.expectEqual(tab_model.LoadingState.idle, active_tab.loading_state);
     try std.testing.expect(active_tab.can_go_back);
     try std.testing.expect(!active_tab.can_go_forward);
+    try std.testing.expectEqual(@as(usize, 1), browser.history.entries().len);
+    try std.testing.expectEqualStrings("https://example.com/docs", browser.history.entries()[0].url);
+    try std.testing.expectEqualStrings("Example Docs", browser.history.entries()[0].title);
 }
 
 test "navigation event maps loading state" {
@@ -291,6 +310,7 @@ test "navigation event maps loading state" {
         .loading_state = .loading,
     });
     try std.testing.expectEqual(tab_model.LoadingState.loading, browser.tabs.activeTab().?.loading_state);
+    try std.testing.expectEqual(@as(usize, 0), browser.history.entries().len);
 
     webview_events.emitNavigation(.{
         .url = "https://example.com",
@@ -298,6 +318,7 @@ test "navigation event maps loading state" {
         .loading_state = .failed,
     });
     try std.testing.expectEqual(tab_model.LoadingState.failed, browser.tabs.activeTab().?.loading_state);
+    try std.testing.expectEqual(@as(usize, 0), browser.history.entries().len);
 
     webview_events.emitNavigation(.{
         .url = "https://example.com",
@@ -305,6 +326,54 @@ test "navigation event maps loading state" {
         .loading_state = .idle,
     });
     try std.testing.expectEqual(tab_model.LoadingState.idle, browser.tabs.activeTab().?.loading_state);
+    try std.testing.expectEqual(@as(usize, 1), browser.history.entries().len);
+}
+
+test "internal navigation events are not recorded in history" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.start();
+    webview_events.emitNavigation(.{
+        .url = "nimlo://start",
+        .title = "Nimlo",
+        .loading_state = .idle,
+    });
+    webview_events.emitNavigation(.{
+        .url = "nimlo://about",
+        .title = "About Nimlo",
+        .loading_state = .idle,
+    });
+
+    try std.testing.expectEqual(@as(usize, 0), browser.history.entries().len);
+}
+
+test "private navigation events are not recorded in history" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        .{
+            .enabled = true,
+            .persist_history = false,
+            .persist_session = false,
+        },
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.start();
+    webview_events.emitNavigation(.{
+        .url = "https://private.example",
+        .title = "Private",
+        .loading_state = .idle,
+    });
+
+    try std.testing.expectEqual(@as(usize, 0), browser.history.entries().len);
 }
 
 test "duplicate tab snapshots are not republished" {

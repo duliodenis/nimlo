@@ -123,6 +123,15 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_tab_manager_tests = b.addRunArtifact(tab_manager_tests);
+    const history_tests = b.addTest(.{
+        .name = "history-tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/storage/history.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_history_tests = b.addRunArtifact(history_tests);
     const browser_tests = b.addTest(.{
         .name = "browser-tests",
         .root_module = b.createModule(.{
@@ -153,5 +162,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_url_input_tests.step);
     test_step.dependOn(&run_tab_tests.step);
     test_step.dependOn(&run_tab_manager_tests.step);
+    test_step.dependOn(&run_history_tests.step);
     test_step.dependOn(&run_browser_tests.step);
 }

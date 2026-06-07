@@ -59,6 +59,7 @@ pub const Browser = struct {
         self.history_persistence_dir = dir;
         self.history_persistence_path = owned_path;
         self.next_history_timestamp = self.history.maxVisitedAt();
+        try self.history.saveToFile(dir, std.Options.debug_io, owned_path);
     }
 
     pub fn start(self: *Browser) !void {
@@ -281,6 +282,7 @@ pub const Browser = struct {
             return;
         }
         if (std.mem.eql(u8, tab.current_url, "nimlo://history")) {
+            self.history.canonicalize();
             const html = try history_page.render(self.allocator, self.history.entries());
             defer self.allocator.free(html);
 
@@ -525,6 +527,50 @@ test "history persistence loads existing visits and saves new visits" {
     try std.testing.expectEqualStrings("https://example.com/new", loaded.entries()[1].url);
     try std.testing.expect(loaded.entries()[1].visited_at >= 1_000_000_000_000);
     try std.testing.expect(loaded.entries()[1].visited_at >= browser.history.entries()[0].visited_at);
+}
+
+test "history persistence updates latest visit for repeated completed navigation" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.enableHistoryPersistenceInDir(tmp_dir.dir, "history.jsonl");
+    try browser.start();
+
+    webview_events.emitNavigation(.{
+        .url = "https://example.com/",
+        .title = "Loading",
+        .loading_state = .idle,
+    });
+    webview_events.emitNavigation(.{
+        .url = "https://example.com/",
+        .title = "Example",
+        .loading_state = .loading,
+    });
+    webview_events.emitNavigation(.{
+        .url = "https://example.com/",
+        .title = "Example",
+        .loading_state = .idle,
+    });
+
+    try std.testing.expectEqual(@as(usize, 1), browser.history.entries().len);
+    try std.testing.expectEqualStrings("Example", browser.history.entries()[0].title);
+
+    var loaded = history.HistoryStore.init(std.testing.allocator);
+    defer loaded.deinit();
+    try loaded.loadFromFile(tmp_dir.dir, std.testing.io, "history.jsonl");
+
+    try std.testing.expectEqual(@as(usize, 1), loaded.entries().len);
+    try std.testing.expectEqualStrings("https://example.com/", loaded.entries()[0].url);
+    try std.testing.expectEqualStrings("Example", loaded.entries()[0].title);
+    try std.testing.expect(loaded.entries()[0].visited_at >= 1_000_000_000_000);
 }
 
 test "clear history request empties memory and persisted file" {

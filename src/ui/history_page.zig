@@ -2,6 +2,10 @@ const std = @import("std");
 const history = @import("../storage/history.zig");
 
 pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntry) ![]u8 {
+    const sorted_entries = try allocator.dupe(history.HistoryEntry, entries);
+    defer allocator.free(sorted_entries);
+    std.mem.sort(history.HistoryEntry, sorted_entries, {}, moreRecentThan);
+
     var html: std.ArrayList(u8) = .empty;
     errdefer html.deinit(allocator);
 
@@ -47,7 +51,7 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\        <h1>History</h1>
         \\        <div class="count" id="count">
     );
-    try appendCount(&html, allocator, entries.len);
+    try appendCount(&html, allocator, sorted_entries.len);
     try html.appendSlice(allocator,
         \\</div>
         \\      </div>
@@ -55,7 +59,7 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\        <input class="search" id="search" type="search" placeholder="Search history" autocomplete="off">
         \\        <a class="clear
     );
-    if (entries.len == 0) {
+    if (sorted_entries.len == 0) {
         try html.appendSlice(allocator, " disabled");
     }
     try html.appendSlice(allocator,
@@ -65,13 +69,11 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\    <section class="panel" id="history">
     );
 
-    if (entries.len == 0) {
+    if (sorted_entries.len == 0) {
         try html.appendSlice(allocator, "<div class=\"empty\">No history yet</div>");
     } else {
-        var index = entries.len;
-        while (index > 0) {
-            index -= 1;
-            try appendEntry(&html, allocator, entries[index]);
+        for (sorted_entries) |entry| {
+            try appendEntry(&html, allocator, entry);
         }
     }
 
@@ -116,6 +118,13 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
     );
 
     return html.toOwnedSlice(allocator);
+}
+
+fn moreRecentThan(_: void, lhs: history.HistoryEntry, rhs: history.HistoryEntry) bool {
+    if (lhs.visited_at == rhs.visited_at) {
+        return std.mem.lessThan(u8, lhs.url, rhs.url);
+    }
+    return lhs.visited_at > rhs.visited_at;
 }
 
 fn appendEntry(html: *std.ArrayList(u8), allocator: std.mem.Allocator, entry: history.HistoryEntry) !void {

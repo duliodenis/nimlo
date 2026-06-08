@@ -78,6 +78,8 @@ pub const Browser = struct {
             .on_internal_page_reload_requested = handleInternalPageReloadRequested,
             .on_history_clear_requested = handleHistoryClearRequested,
             .on_history_clear_confirmed_requested = handleHistoryClearConfirmedRequested,
+            .on_history_urls_delete_requested = handleHistoryUrlsDeleteRequested,
+            .on_history_urls_open_requested = handleHistoryUrlsOpenRequested,
             .on_tab_activated_requested = handleTabActivatedRequested,
             .on_tab_closed_requested = handleTabClosedRequested,
         });
@@ -186,6 +188,34 @@ pub const Browser = struct {
         const tab = self.tabs.findTabByWebView(source_handle) orelse self.tabs.activeTab() orelse return;
         if (std.mem.eql(u8, tab.current_url, "nimlo://history")) {
             self.loadTab(tab.*) catch return;
+        }
+    }
+
+    fn handleHistoryUrlsDeleteRequested(context: *anyopaque, source_handle: ?*anyopaque, request_url: []const u8) void {
+        const self: *Browser = @ptrCast(@alignCast(context));
+        var urls = parseHistoryActionUrls(self.allocator, request_url) catch return;
+        defer urls.deinit();
+
+        if (self.history.removeUrls(urls.items) == 0) return;
+        if (self.history_persistence_path) |path| {
+            const dir = self.history_persistence_dir orelse std.Io.Dir.cwd();
+            self.history.saveToFile(dir, std.Options.debug_io, path) catch {};
+        }
+
+        const tab = self.tabs.findTabByWebView(source_handle) orelse self.tabs.activeTab() orelse return;
+        if (std.mem.eql(u8, tab.current_url, "nimlo://history")) {
+            self.loadTab(tab.*) catch return;
+        }
+    }
+
+    fn handleHistoryUrlsOpenRequested(context: *anyopaque, _: ?*anyopaque, request_url: []const u8) void {
+        const self: *Browser = @ptrCast(@alignCast(context));
+        var urls = parseHistoryActionUrls(self.allocator, request_url) catch return;
+        defer urls.deinit();
+
+        for (urls.items) |url| {
+            if (!history.shouldRecordUrl(url)) continue;
+            self.openOrActivateUrl(url) catch continue;
         }
     }
 
@@ -336,6 +366,80 @@ pub const Browser = struct {
         };
     }
 };
+
+const ParsedHistoryUrls = struct {
+    allocator: std.mem.Allocator,
+    items: []const []const u8,
+
+    fn deinit(self: *ParsedHistoryUrls) void {
+        for (self.items) |url| {
+            self.allocator.free(url);
+        }
+        self.allocator.free(self.items);
+    }
+};
+
+fn parseHistoryActionUrls(allocator: std.mem.Allocator, request_url: []const u8) !ParsedHistoryUrls {
+    const query_start = std.mem.indexOfScalar(u8, request_url, '?') orelse return .{
+        .allocator = allocator,
+        .items = try allocator.alloc([]const u8, 0),
+    };
+    const query = request_url[query_start + 1 ..];
+    var params = std.mem.splitScalar(u8, query, '&');
+    while (params.next()) |param| {
+        if (!std.mem.startsWith(u8, param, "urls=")) continue;
+
+        const decoded = try percentDecodeAlloc(allocator, param["urls=".len..]);
+        defer allocator.free(decoded);
+
+        var items: std.ArrayList([]const u8) = .empty;
+        errdefer {
+            for (items.items) |item| allocator.free(item);
+            items.deinit(allocator);
+        }
+
+        var lines = std.mem.splitScalar(u8, decoded, '\n');
+        while (lines.next()) |line| {
+            if (line.len == 0) continue;
+            try items.append(allocator, try allocator.dupe(u8, line));
+        }
+
+        return .{
+            .allocator = allocator,
+            .items = try items.toOwnedSlice(allocator),
+        };
+    }
+
+    return .{
+        .allocator = allocator,
+        .items = try allocator.alloc([]const u8, 0),
+    };
+}
+
+fn percentDecodeAlloc(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
+
+    var index: usize = 0;
+    while (index < text.len) {
+        if (text[index] == '%' and index + 2 < text.len) {
+            const high = std.fmt.charToDigit(text[index + 1], 16) catch null;
+            const low = std.fmt.charToDigit(text[index + 2], 16) catch null;
+            if (high) |hi| {
+                if (low) |lo| {
+                    try output.append(allocator, @intCast((hi << 4) | lo));
+                    index += 3;
+                    continue;
+                }
+            }
+        }
+
+        try output.append(allocator, if (text[index] == '+') ' ' else text[index]);
+        index += 1;
+    }
+
+    return output.toOwnedSlice(allocator);
+}
 
 fn countTabsChanged(context: *anyopaque, tabs: []const webview_events.TabSnapshot) void {
     _ = tabs;
@@ -571,6 +675,65 @@ test "history persistence updates latest visit for repeated completed navigation
     try std.testing.expectEqualStrings("https://example.com/", loaded.entries()[0].url);
     try std.testing.expectEqualStrings("Example", loaded.entries()[0].title);
     try std.testing.expect(loaded.entries()[0].visited_at >= 1_000_000_000_000);
+}
+
+test "selected history delete removes urls from memory and persistence" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var seeded = history.HistoryStore.init(std.testing.allocator);
+    defer seeded.deinit();
+    try seeded.recordVisit("https://example.com/old", "Old", 51);
+    try seeded.recordVisit("https://example.com/keep", "Keep", 52);
+    try seeded.recordVisit("https://example.com/remove", "Remove", 53);
+    try seeded.saveToFile(tmp_dir.dir, std.testing.io, "history.jsonl");
+
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.enableHistoryPersistenceInDir(tmp_dir.dir, "history.jsonl");
+    try browser.start();
+
+    webview_events.emitHistoryUrlsDeleteRequested(null, "https://nimlo.internal/history/delete?urls=https%3A%2F%2Fexample.com%2Fold%0Ahttps%3A%2F%2Fexample.com%2Fremove");
+
+    try std.testing.expectEqual(@as(usize, 1), browser.history.entries().len);
+    try std.testing.expectEqualStrings("https://example.com/keep", browser.history.entries()[0].url);
+
+    var loaded = history.HistoryStore.init(std.testing.allocator);
+    defer loaded.deinit();
+    try loaded.loadFromFile(tmp_dir.dir, std.testing.io, "history.jsonl");
+
+    try std.testing.expectEqual(@as(usize, 1), loaded.entries().len);
+    try std.testing.expectEqualStrings("https://example.com/keep", loaded.entries()[0].url);
+}
+
+test "selected history open opens each selected url" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.start();
+
+    webview_events.emitHistoryUrlsOpenRequested(null, "https://nimlo.internal/history/open?urls=https%3A%2F%2Fexample.com%2Fone%0Ahttps%3A%2F%2Fexample.com%2Ftwo");
+
+    try std.testing.expectEqual(@as(usize, 3), browser.tabs.len());
+    var found_one = false;
+    var found_two = false;
+    for (browser.tabs.tabs.items) |tab| {
+        if (std.mem.eql(u8, tab.current_url, "https://example.com/one")) found_one = true;
+        if (std.mem.eql(u8, tab.current_url, "https://example.com/two")) found_two = true;
+    }
+    try std.testing.expect(found_one);
+    try std.testing.expect(found_two);
 }
 
 test "clear history request empties memory and persisted file" {

@@ -131,6 +131,29 @@ pub const HistoryStore = struct {
         try self.saveToFile(dir, io, path);
     }
 
+    pub fn removeUrl(self: *HistoryStore, url: []const u8) bool {
+        var index: usize = 0;
+        while (index < self.items.items.len) : (index += 1) {
+            const entry = &self.items.items[index];
+            if (!std.mem.eql(u8, entry.url, url)) continue;
+
+            self.allocator.free(entry.url);
+            self.allocator.free(entry.title);
+            _ = self.items.orderedRemove(index);
+            return true;
+        }
+
+        return false;
+    }
+
+    pub fn removeUrls(self: *HistoryStore, urls: []const []const u8) usize {
+        var removed: usize = 0;
+        for (urls) |url| {
+            if (self.removeUrl(url)) removed += 1;
+        }
+        return removed;
+    }
+
     pub fn canonicalize(self: *HistoryStore) void {
         self.compactRepeatedVisits();
         self.sortByVisitedAtAscending();
@@ -270,6 +293,26 @@ test "skips empty urls" {
     try store.recordVisit("", "Untitled", 1);
 
     try std.testing.expectEqual(@as(usize, 0), store.entries().len);
+}
+
+test "removes visits by url" {
+    var store = HistoryStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.recordVisit("https://example.com/docs", "Docs", 1);
+    try store.recordVisit("https://ziglang.org", "Zig", 2);
+    try store.recordVisit("https://example.com/blog", "Blog", 3);
+
+    const urls = [_][]const u8{
+        "https://ziglang.org",
+        "https://missing.example",
+        "https://example.com/docs",
+    };
+    const removed = store.removeUrls(&urls);
+
+    try std.testing.expectEqual(@as(usize, 2), removed);
+    try std.testing.expectEqual(@as(usize, 1), store.entries().len);
+    try std.testing.expectEqualStrings("https://example.com/blog", store.entries()[0].url);
 }
 
 test "saves and loads history file" {

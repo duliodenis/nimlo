@@ -28,24 +28,29 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\    .actions{display:flex;gap:10px;align-items:center}
         \\    .search{width:min(360px,44vw);height:34px;border:1px solid var(--line);border-radius:6px;background:var(--field);color:var(--text);padding:0 11px;font:inherit}
         \\    .search:focus{outline:2px solid color-mix(in srgb,var(--accent) 28%,transparent);border-color:var(--accent)}
-        \\    .clear{display:inline-flex;height:34px;border:1px solid #b42318;border-radius:6px;background:transparent;color:#b42318;padding:0 12px;font:inherit;font-weight:600;white-space:nowrap;align-items:center;text-decoration:none}
-        \\    .clear:hover{background:color-mix(in srgb,#b42318 10%,transparent)}
-        \\    .clear.disabled{opacity:.45;pointer-events:none}
-        \\    @media (prefers-color-scheme:dark){.clear{border-color:#f97066;color:#f97066}.clear:hover{background:color-mix(in srgb,#f97066 14%,transparent)}}
+        \\    .button-link{display:inline-flex;height:34px;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--text);padding:0 12px;font:inherit;font-weight:600;white-space:nowrap;align-items:center;text-decoration:none}
+        \\    .button-link:hover{background:color-mix(in srgb,var(--text) 7%,transparent)}
+        \\    .button-link.danger{border-color:#b42318;color:#b42318}
+        \\    .button-link.danger:hover{background:color-mix(in srgb,#b42318 10%,transparent)}
+        \\    .button-link.disabled{opacity:.45;pointer-events:none}
+        \\    @media (prefers-color-scheme:dark){.button-link.danger{border-color:#f97066;color:#f97066}.button-link.danger:hover{background:color-mix(in srgb,#f97066 14%,transparent)}}
+        \\    .selection-bar{display:flex;gap:10px;align-items:center;justify-content:flex-end;margin:-6px 0 14px}
+        \\    .selected-count{color:var(--muted);font-size:13px;margin-right:2px}
         \\    .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
         \\    .day{border-top:1px solid var(--line)}
         \\    .day:first-child{border-top:0}
         \\    .day-header{margin:0;padding:10px 16px;color:var(--muted);font-size:12px;font-weight:650;text-transform:uppercase;letter-spacing:0}
         \\    .day-list{border-top:1px solid var(--line)}
-        \\    .row{display:grid;grid-template-columns:minmax(0,1fr) 180px;gap:18px;padding:13px 16px;border-top:1px solid var(--line);align-items:center}
+        \\    .row{display:grid;grid-template-columns:22px minmax(0,1fr) 180px;gap:14px;padding:13px 16px;border-top:1px solid var(--line);align-items:center}
         \\    .row:first-child{border-top:0}
+        \\    .select{width:16px;height:16px;margin:0;accent-color:var(--accent)}
         \\    .title{display:block;color:var(--text);font-weight:550;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
         \\    a.title:hover{text-decoration:underline;text-underline-offset:3px}
         \\    .url{margin-top:4px;color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
         \\    time{color:var(--muted);font-size:12px;text-align:right;white-space:nowrap}
         \\    .empty{padding:44px 16px;text-align:center;color:var(--muted)}
         \\    .hidden{display:none}
-        \\    @media (max-width:640px){main{padding:18px}header{display:block}.actions{margin-top:14px}.search{width:100%;min-width:0}.row{grid-template-columns:1fr;gap:6px}time{text-align:left}}
+        \\    @media (max-width:640px){main{padding:18px}header{display:block}.actions{margin-top:14px}.search{width:100%;min-width:0}.selection-bar{justify-content:flex-start}.row{grid-template-columns:22px 1fr;gap:8px 12px}time{grid-column:2;text-align:left}}
         \\  </style>
         \\</head>
         \\<body>
@@ -61,7 +66,7 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\      </div>
         \\      <div class="actions">
         \\        <input class="search" id="search" type="search" placeholder="Search history" autocomplete="off">
-        \\        <a class="clear
+        \\        <a class="button-link danger
     );
     if (sorted_entries.len == 0) {
         try html.appendSlice(allocator, " disabled");
@@ -70,6 +75,11 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\" href="https://nimlo.internal/history/clear">Clear History</a>
         \\      </div>
         \\    </header>
+        \\    <div class="selection-bar hidden" id="selection-bar">
+        \\      <span class="selected-count" id="selected-count">0 selected</span>
+        \\      <a class="button-link" id="open-selected" href="#">Open</a>
+        \\      <a class="button-link danger" id="delete-selected" href="#">Delete</a>
+        \\    </div>
         \\    <section class="panel" id="history">
     );
 
@@ -89,7 +99,12 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\    const rows = [...document.querySelectorAll(".row")];
         \\    const count = document.getElementById("count");
         \\    const history = document.getElementById("history");
+        \\    const selectionBar = document.getElementById("selection-bar");
+        \\    const selectedCount = document.getElementById("selected-count");
+        \\    const openSelected = document.getElementById("open-selected");
+        \\    const deleteSelected = document.getElementById("delete-selected");
         \\    const label = (value) => `${value} ${value === 1 ? "visit" : "visits"}`;
+        \\    const selectedLabel = (value) => `${value} selected`;
         \\    const hostFromUrl = (value) => {
         \\      try {
         \\        return new URL(value).hostname.replace(/^www\./, "");
@@ -99,6 +114,15 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\    };
         \\    const searchTokens = (value) => value.trim().toLowerCase().split(/\s+/).filter(Boolean);
         \\    const matchesSearch = (row, tokens) => tokens.length === 0 || tokens.every((token) => row.dataset.search.includes(token));
+        \\    const selectedUrls = () => rows.filter((row) => row.querySelector(".select").checked).map((row) => row.dataset.url);
+        \\    const actionHref = (action, urls) => `https://nimlo.internal/history/${action}?urls=${encodeURIComponent(urls.join("\n"))}`;
+        \\    const updateSelection = () => {
+        \\      const urls = selectedUrls();
+        \\      selectionBar.classList.toggle("hidden", urls.length === 0);
+        \\      selectedCount.textContent = selectedLabel(urls.length);
+        \\      openSelected.href = urls.length === 0 ? "#" : actionHref("open", urls);
+        \\      deleteSelected.href = urls.length === 0 ? "#" : actionHref("delete", urls);
+        \\    };
         \\    const groupLabel = (value) => {
         \\      if (!Number.isFinite(value) || value < 1000000000000) return "Earlier";
         \\      const date = new Date(value);
@@ -154,8 +178,10 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\    });
         \\    rows.forEach((row) => {
         \\      row.dataset.search = `${row.dataset.search} ${hostFromUrl(row.dataset.url)}`.toLowerCase();
+        \\      row.querySelector(".select").addEventListener("change", updateSelection);
         \\    });
         \\    buildDayGroups();
+        \\    updateSelection();
         \\    search.addEventListener("input", () => {
         \\      const query = search.value.trim();
         \\      const tokens = searchTokens(query);
@@ -193,6 +219,8 @@ fn appendEntry(html: *std.ArrayList(u8), allocator: std.mem.Allocator, entry: hi
     try appendEscapedHtml(html, allocator, entry.url);
     try html.appendSlice(allocator, "\" data-url=\"");
     try appendEscapedHtml(html, allocator, entry.url);
+    try html.appendSlice(allocator, "\"><input class=\"select\" type=\"checkbox\" aria-label=\"Select ");
+    try appendEscapedHtml(html, allocator, titleForEntry(entry));
     try html.appendSlice(allocator, "\"><div>");
 
     if (isLinkableUrl(entry.url)) {
@@ -268,7 +296,7 @@ test "renders empty history state" {
     try std.testing.expect(std.mem.indexOf(u8, html, "No history yet") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "0 visits") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "Clear History") != null);
-    try std.testing.expect(std.mem.indexOf(u8, html, "class=\"clear disabled\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "class=\"button-link danger disabled\"") != null);
 }
 
 test "renders entries newest first and escapes content" {
@@ -285,7 +313,23 @@ test "renders entries newest first and escapes content" {
     try std.testing.expect(std.mem.indexOf(u8, html, "https://example.com/?q=&lt;tag&gt;") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "Clear History") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "https://nimlo.internal/history/clear") != null);
-    try std.testing.expect(std.mem.indexOf(u8, html, "class=\"clear disabled\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "class=\"button-link danger disabled\"") == null);
+}
+
+test "renders selection controls for history rows" {
+    const entries = [_]history.HistoryEntry{
+        .{ .url = "https://example.com/docs", .title = "Docs", .visited_at = 1 },
+    };
+    const html = try render(std.testing.allocator, &entries);
+    defer std.testing.allocator.free(html);
+
+    try std.testing.expect(std.mem.indexOf(u8, html, "class=\"selection-bar hidden\" id=\"selection-bar\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "id=\"open-selected\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "id=\"delete-selected\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "class=\"select\" type=\"checkbox\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "const selectedUrls =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "https://nimlo.internal/history/${action}?urls=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "encodeURIComponent(urls.join(\"\\n\"))") != null);
 }
 
 test "includes day grouping and grouped search behavior" {

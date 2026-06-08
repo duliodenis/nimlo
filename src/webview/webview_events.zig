@@ -30,6 +30,8 @@ pub const EventSink = struct {
     on_internal_page_reload_requested: ?*const fn (context: *anyopaque, source_handle: ?*anyopaque, url: []const u8) void = null,
     on_history_clear_requested: ?*const fn (context: *anyopaque, source_handle: ?*anyopaque) void = null,
     on_history_clear_confirmed_requested: ?*const fn (context: *anyopaque, source_handle: ?*anyopaque) void = null,
+    on_history_urls_delete_requested: ?*const fn (context: *anyopaque, source_handle: ?*anyopaque, request_url: []const u8) void = null,
+    on_history_urls_open_requested: ?*const fn (context: *anyopaque, source_handle: ?*anyopaque, request_url: []const u8) void = null,
     on_tab_activated_requested: ?*const fn (context: *anyopaque, tab_id: u64) void = null,
     on_tab_closed_requested: ?*const fn (context: *anyopaque, tab_id: u64) void = null,
 };
@@ -133,6 +135,22 @@ pub fn emitHistoryClearConfirmedRequested(source_handle: ?*anyopaque) void {
     if (current_sink) |sink| {
         if (sink.on_history_clear_confirmed_requested) |callback| {
             callback(sink.context, source_handle);
+        }
+    }
+}
+
+pub fn emitHistoryUrlsDeleteRequested(source_handle: ?*anyopaque, request_url: []const u8) void {
+    if (current_sink) |sink| {
+        if (sink.on_history_urls_delete_requested) |callback| {
+            callback(sink.context, source_handle, request_url);
+        }
+    }
+}
+
+pub fn emitHistoryUrlsOpenRequested(source_handle: ?*anyopaque, request_url: []const u8) void {
+    if (current_sink) |sink| {
+        if (sink.on_history_urls_open_requested) |callback| {
+            callback(sink.context, source_handle, request_url);
         }
     }
 }

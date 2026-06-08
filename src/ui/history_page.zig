@@ -90,6 +90,15 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\    const count = document.getElementById("count");
         \\    const history = document.getElementById("history");
         \\    const label = (value) => `${value} ${value === 1 ? "visit" : "visits"}`;
+        \\    const hostFromUrl = (value) => {
+        \\      try {
+        \\        return new URL(value).hostname.replace(/^www\./, "");
+        \\      } catch {
+        \\        return "";
+        \\      }
+        \\    };
+        \\    const searchTokens = (value) => value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+        \\    const matchesSearch = (row, tokens) => tokens.length === 0 || tokens.every((token) => row.dataset.search.includes(token));
         \\    const groupLabel = (value) => {
         \\      if (!Number.isFinite(value) || value < 1000000000000) return "Earlier";
         \\      const date = new Date(value);
@@ -143,12 +152,16 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\      const formatted = formatVisitedAt(Number.parseInt(node.dataset.visitedAt, 10));
         \\      if (formatted) node.textContent = formatted;
         \\    });
+        \\    rows.forEach((row) => {
+        \\      row.dataset.search = `${row.dataset.search} ${hostFromUrl(row.dataset.url)}`.toLowerCase();
+        \\    });
         \\    buildDayGroups();
         \\    search.addEventListener("input", () => {
-        \\      const query = search.value.trim().toLowerCase();
+        \\      const query = search.value.trim();
+        \\      const tokens = searchTokens(query);
         \\      let visible = 0;
         \\      for (const row of rows) {
-        \\        const match = row.dataset.search.includes(query);
+        \\        const match = matchesSearch(row, tokens);
         \\        row.classList.toggle("hidden", !match);
         \\        if (match) visible += 1;
         \\      }
@@ -177,6 +190,8 @@ fn appendEntry(html: *std.ArrayList(u8), allocator: std.mem.Allocator, entry: hi
     try html.appendSlice(allocator, "<article class=\"row\" data-search=\"");
     try appendEscapedHtml(html, allocator, entry.title);
     try html.appendSlice(allocator, " ");
+    try appendEscapedHtml(html, allocator, entry.url);
+    try html.appendSlice(allocator, "\" data-url=\"");
     try appendEscapedHtml(html, allocator, entry.url);
     try html.appendSlice(allocator, "\"><div>");
 
@@ -286,6 +301,21 @@ test "includes day grouping and grouped search behavior" {
     try std.testing.expect(std.mem.indexOf(u8, html, "const buildDayGroups =") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "history.textContent = \"\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "group.classList.toggle(\"hidden\", !hasVisibleRows)") != null);
+}
+
+test "includes tokenized title url and hostname search" {
+    const entries = [_]history.HistoryEntry{
+        .{ .url = "https://www.nytimes.com/live/2026/06/07/world/iran-israel-missiles", .title = "Live Updates", .visited_at = 1_799_999_999_000 },
+    };
+    const html = try render(std.testing.allocator, &entries);
+    defer std.testing.allocator.free(html);
+
+    try std.testing.expect(std.mem.indexOf(u8, html, "data-url=\"https://www.nytimes.com/live/2026/06/07/world/iran-israel-missiles\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "const hostFromUrl =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "const searchTokens =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "tokens.every((token) => row.dataset.search.includes(token))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "hostFromUrl(row.dataset.url)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, ".toLowerCase()") != null);
 }
 
 test "does not create links for non-web schemes" {

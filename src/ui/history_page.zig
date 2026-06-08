@@ -33,6 +33,10 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\    .clear.disabled{opacity:.45;pointer-events:none}
         \\    @media (prefers-color-scheme:dark){.clear{border-color:#f97066;color:#f97066}.clear:hover{background:color-mix(in srgb,#f97066 14%,transparent)}}
         \\    .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+        \\    .day{border-top:1px solid var(--line)}
+        \\    .day:first-child{border-top:0}
+        \\    .day-header{margin:0;padding:10px 16px;color:var(--muted);font-size:12px;font-weight:650;text-transform:uppercase;letter-spacing:0}
+        \\    .day-list{border-top:1px solid var(--line)}
         \\    .row{display:grid;grid-template-columns:minmax(0,1fr) 180px;gap:18px;padding:13px 16px;border-top:1px solid var(--line);align-items:center}
         \\    .row:first-child{border-top:0}
         \\    .title{display:block;color:var(--text);font-weight:550;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -84,7 +88,20 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\    const search = document.getElementById("search");
         \\    const rows = [...document.querySelectorAll(".row")];
         \\    const count = document.getElementById("count");
+        \\    const history = document.getElementById("history");
         \\    const label = (value) => `${value} ${value === 1 ? "visit" : "visits"}`;
+        \\    const groupLabel = (value) => {
+        \\      if (!Number.isFinite(value) || value < 1000000000000) return "Earlier";
+        \\      const date = new Date(value);
+        \\      if (Number.isNaN(date.getTime())) return "Earlier";
+        \\      const now = new Date();
+        \\      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+        \\      const startOfVisitedDay = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+        \\      const dayDelta = Math.round((startOfToday - startOfVisitedDay) / 86400000);
+        \\      if (dayDelta === 0) return "Today";
+        \\      if (dayDelta === 1) return "Yesterday";
+        \\      return new Intl.DateTimeFormat([], { month: "short", day: "numeric", year: "numeric" }).format(date);
+        \\    };
         \\    const formatVisitedAt = (value) => {
         \\      if (!Number.isFinite(value) || value < 1000000000000) return null;
         \\      const date = new Date(value);
@@ -98,10 +115,35 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\      if (dayDelta === 1) return `Yesterday, ${time}`;
         \\      return new Intl.DateTimeFormat([], { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }).format(date);
         \\    };
+        \\    const buildDayGroups = () => {
+        \\      if (rows.length === 0) return;
+        \\      history.textContent = "";
+        \\      const groups = new Map();
+        \\      for (const row of rows) {
+        \\        const visitedAt = Number.parseInt(row.querySelector("time[data-visited-at]")?.dataset.visitedAt ?? "", 10);
+        \\        const day = groupLabel(visitedAt);
+        \\        let group = groups.get(day);
+        \\        if (!group) {
+        \\          group = document.createElement("section");
+        \\          group.className = "day";
+        \\          group.dataset.day = day.toLowerCase();
+        \\          const heading = document.createElement("h2");
+        \\          heading.className = "day-header";
+        \\          heading.textContent = day;
+        \\          const list = document.createElement("div");
+        \\          list.className = "day-list";
+        \\          group.append(heading, list);
+        \\          history.append(group);
+        \\          groups.set(day, group);
+        \\        }
+        \\        group.querySelector(".day-list").append(row);
+        \\      }
+        \\    };
         \\    document.querySelectorAll("time[data-visited-at]").forEach((node) => {
         \\      const formatted = formatVisitedAt(Number.parseInt(node.dataset.visitedAt, 10));
         \\      if (formatted) node.textContent = formatted;
         \\    });
+        \\    buildDayGroups();
         \\    search.addEventListener("input", () => {
         \\      const query = search.value.trim().toLowerCase();
         \\      let visible = 0;
@@ -110,6 +152,10 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\        row.classList.toggle("hidden", !match);
         \\        if (match) visible += 1;
         \\      }
+        \\      document.querySelectorAll(".day").forEach((group) => {
+        \\        const hasVisibleRows = [...group.querySelectorAll(".row")].some((row) => !row.classList.contains("hidden"));
+        \\        group.classList.toggle("hidden", !hasVisibleRows);
+        \\      });
         \\      count.textContent = query ? `${label(visible)} found` : label(rows.length);
         \\    });
         \\  </script>
@@ -225,6 +271,21 @@ test "renders entries newest first and escapes content" {
     try std.testing.expect(std.mem.indexOf(u8, html, "Clear History") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "https://nimlo.internal/history/clear") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "class=\"clear disabled\"") == null);
+}
+
+test "includes day grouping and grouped search behavior" {
+    const entries = [_]history.HistoryEntry{
+        .{ .url = "https://example.com/today", .title = "Today", .visited_at = 1_799_999_999_000 },
+        .{ .url = "https://example.com/older", .title = "Older", .visited_at = 1_799_913_599_000 },
+    };
+    const html = try render(std.testing.allocator, &entries);
+    defer std.testing.allocator.free(html);
+
+    try std.testing.expect(std.mem.indexOf(u8, html, ".day-header") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "const groupLabel =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "const buildDayGroups =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "history.textContent = \"\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "group.classList.toggle(\"hidden\", !hasVisibleRows)") != null);
 }
 
 test "does not create links for non-web schemes" {

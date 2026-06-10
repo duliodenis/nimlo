@@ -42,7 +42,9 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\    .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
         \\    .day{border-top:1px solid var(--line)}
         \\    .day:first-child{border-top:0}
-        \\    .day-header{margin:0;padding:10px 16px;color:var(--muted);font-size:12px;font-weight:650;text-transform:uppercase;letter-spacing:0}
+        \\    .day-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0;padding:10px 16px;color:var(--muted);font-size:12px;font-weight:650;text-transform:uppercase;letter-spacing:0}
+        \\    .day-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        \\    .day-select{height:auto;padding:0;font-size:12px;text-transform:none;letter-spacing:0}
         \\    .day-list{border-top:1px solid var(--line)}
         \\    .row{display:grid;grid-template-columns:22px minmax(0,1fr) 180px;gap:14px;padding:13px 16px;border-top:1px solid var(--line);align-items:center}
         \\    .row:first-child{border-top:0}
@@ -192,9 +194,17 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\          group.dataset.day = day.toLowerCase();
         \\          const heading = document.createElement("h2");
         \\          heading.className = "day-header";
-        \\          heading.textContent = day;
+        \\          const title = document.createElement("span");
+        \\          title.className = "day-title";
+        \\          title.textContent = day;
+        \\          const selectDay = document.createElement("button");
+        \\          selectDay.className = "text-button day-select";
+        \\          selectDay.type = "button";
+        \\          selectDay.textContent = "Select day";
         \\          const list = document.createElement("div");
         \\          list.className = "day-list";
+        \\          selectDay.addEventListener("click", () => setRowsSelected([...list.querySelectorAll(".row")], true));
+        \\          heading.append(title, selectDay);
         \\          group.append(heading, list);
         \\          history.append(group);
         \\          groups.set(day, group);
@@ -395,8 +405,11 @@ test "includes day grouping and grouped search behavior" {
     defer std.testing.allocator.free(html);
 
     try std.testing.expect(std.mem.indexOf(u8, html, ".day-header") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, ".day-select") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "const groupLabel =") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "const buildDayGroups =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "selectDay.textContent = \"Select day\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "setRowsSelected([...list.querySelectorAll(\".row\")], true)") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "history.textContent = \"\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "group.classList.toggle(\"hidden\", !hasVisibleRows)") != null);
 }

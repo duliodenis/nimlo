@@ -34,6 +34,8 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\    .button-link.danger:hover{background:color-mix(in srgb,#b42318 10%,transparent)}
         \\    .button-link.disabled{opacity:.45;pointer-events:none}
         \\    @media (prefers-color-scheme:dark){.button-link.danger{border-color:#f97066;color:#f97066}.button-link.danger:hover{background:color-mix(in srgb,#f97066 14%,transparent)}}
+        \\    .text-button{height:34px;border:0;background:transparent;color:var(--accent);padding:0 4px;font:inherit;font-weight:600;white-space:nowrap;cursor:pointer}
+        \\    .text-button:hover{text-decoration:underline;text-underline-offset:3px}
         \\    .selection-bar{display:flex;gap:10px;align-items:center;justify-content:flex-end;margin:-6px 0 14px}
         \\    .selected-count{color:var(--muted);font-size:13px;margin-right:2px}
         \\    .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
@@ -77,6 +79,8 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\    </header>
         \\    <div class="selection-bar hidden" id="selection-bar">
         \\      <span class="selected-count" id="selected-count">0 selected</span>
+        \\      <button class="text-button" id="select-visible" type="button">Select visible</button>
+        \\      <button class="text-button" id="clear-selection" type="button">Clear selection</button>
         \\      <a class="button-link" id="open-selected" href="#">Open</a>
         \\      <a class="button-link danger" id="delete-selected" href="#">Delete</a>
         \\    </div>
@@ -101,6 +105,8 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\    const history = document.getElementById("history");
         \\    const selectionBar = document.getElementById("selection-bar");
         \\    const selectedCount = document.getElementById("selected-count");
+        \\    const selectVisible = document.getElementById("select-visible");
+        \\    const clearSelection = document.getElementById("clear-selection");
         \\    const openSelected = document.getElementById("open-selected");
         \\    const deleteSelected = document.getElementById("delete-selected");
         \\    const label = (value) => `${value} ${value === 1 ? "visit" : "visits"}`;
@@ -115,6 +121,7 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\    const searchTokens = (value) => value.trim().toLowerCase().split(/\s+/).filter(Boolean);
         \\    const matchesSearch = (row, tokens) => tokens.length === 0 || tokens.every((token) => row.dataset.search.includes(token));
         \\    const selectedUrls = () => rows.filter((row) => row.querySelector(".select").checked).map((row) => row.dataset.url);
+        \\    const visibleRows = () => rows.filter((row) => !row.classList.contains("hidden"));
         \\    const actionHref = (action, urls) => `https://nimlo.internal/history/${action}?urls=${encodeURIComponent(urls.join("\n"))}`;
         \\    const updateSelection = () => {
         \\      const urls = selectedUrls();
@@ -122,6 +129,12 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\      selectedCount.textContent = selectedLabel(urls.length);
         \\      openSelected.href = urls.length === 0 ? "#" : actionHref("open", urls);
         \\      deleteSelected.href = urls.length === 0 ? "#" : actionHref("delete", urls);
+        \\    };
+        \\    const setRowsSelected = (targetRows, selected) => {
+        \\      targetRows.forEach((row) => {
+        \\        row.querySelector(".select").checked = selected;
+        \\      });
+        \\      updateSelection();
         \\    };
         \\    const groupLabel = (value) => {
         \\      if (!Number.isFinite(value) || value < 1000000000000) return "Earlier";
@@ -182,6 +195,8 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\    });
         \\    buildDayGroups();
         \\    updateSelection();
+        \\    selectVisible.addEventListener("click", () => setRowsSelected(visibleRows(), true));
+        \\    clearSelection.addEventListener("click", () => setRowsSelected(rows, false));
         \\    search.addEventListener("input", () => {
         \\      const query = search.value.trim();
         \\      const tokens = searchTokens(query);
@@ -324,10 +339,16 @@ test "renders selection controls for history rows" {
     defer std.testing.allocator.free(html);
 
     try std.testing.expect(std.mem.indexOf(u8, html, "class=\"selection-bar hidden\" id=\"selection-bar\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "id=\"select-visible\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "id=\"clear-selection\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "id=\"open-selected\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "id=\"delete-selected\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "class=\"select\" type=\"checkbox\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "const selectedUrls =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "const visibleRows =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "const setRowsSelected =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "setRowsSelected(visibleRows(), true)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "setRowsSelected(rows, false)") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "https://nimlo.internal/history/${action}?urls=") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "encodeURIComponent(urls.join(\"\\n\"))") != null);
 }

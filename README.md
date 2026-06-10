@@ -32,6 +32,8 @@ Current prototype capabilities:
 - Closed tabs destroy their native WebView
 - Nonpersistent WebKit website data store by default
 - Process-local WebCrypto master key for nonpersistent browsing sessions
+- Local JSONL history persistence
+- `nimlo://history` page with day grouping, search, multi-select, selected open/delete, delete confirmation, and keyboard/range selection controls
 - No telemetry or account features
 
 ## Philosophy
@@ -141,41 +143,74 @@ Nimlo
 - [x] Back and forward
 - [x] Next and previous tab
 
-### 0.5 — Bookmarks and History
+### 0.5 — History & Bookmarks
 
+- [x] Save local browsing history
+- [x] View history
+- [x] De-dupe repeated URL visits in persisted history
+- [x] Sort history newest-first
+- [x] Group history by day
+- [x] Search history by title, URL, and hostname
+- [x] Tokenized history search
+- [x] Multi-select history rows
+- [x] Open selected history rows
+- [x] Delete selected history rows
+- [x] Select visible search results
+- [x] Select a full day group
+- [x] Confirm bulk delete before removal
+- [x] Keyboard and range-selection shortcuts
 - [ ] Save bookmarks
 - [ ] View bookmarks
 - [ ] Remove bookmarks
-- [ ] Save local browsing history
-- [ ] View history
 
-### 0.6 — Settings
+### 0.6 — Window and Tab Management
+
+- [ ] Drag tabs to reorder
+- [ ] Detach tab into a new window
+- [ ] Move tab between windows
+- [ ] Close window when its last tab closes
+- [ ] Preserve per-window active tab state
+
+### 0.7 — Downloads
+
+- [ ] Track completed downloads
+- [ ] Add `nimlo://downloads`
+- [ ] View downloads newest-first
+- [ ] Persist downloads metadata
+- [ ] Open downloaded files
+- [ ] Reveal downloads in Finder
+- [ ] Remove or clear download records
+
+### 0.8 — Content Blocking
+
+- [ ] Research uBlock Origin capabilities and filter-list behavior
+- [ ] Add URL-level blocking hooks before navigation/request load where WebKit allows
+- [ ] Support common filter lists such as EasyList/EasyPrivacy-style network filters
+- [ ] Add local filter list storage and update flow
+- [ ] Add per-site allow/block controls
+- [ ] Add a basic content-blocking settings page
+- [ ] Investigate cosmetic filtering feasibility in `WKWebView`
+- [ ] Investigate advanced dynamic filtering and per-site firewall scope
+
+### 0.9 — Private Mode UX
+
+- [x] Nonpersistent WebKit data store by default
+- [x] Private mode config can disable history persistence
+- [x] Private navigation events are not recorded in history
+- [x] No session restore persistence yet
+- [ ] Private tab or private window distinction
+- [ ] Open private tab or private window UI
+- [ ] Clear visual private mode indicator
+
+### 1.0 — Settings
 
 - [ ] Default search engine
 - [ ] Homepage/start page
 - [ ] Download directory
 - [ ] Theme preference
-
-### 0.7 — Private Mode
-
-- [x] Nonpersistent WebKit data store by default
-- [x] No history persistence yet
-- [x] No session restore persistence yet
-- [ ] Private tab or private window distinction
-- [ ] Clear visual private mode indicator
-
-### 1.0 — Lightweight Daily Browser Shell
-
-- Stable navigation
-- Tabs
-- Bookmarks
-- History
-- Settings
-- Downloads
-- Private mode
-- Local-first data
-- No telemetry
-- No ads
+- [ ] Private/Incognito behavior
+- [ ] Content blocking preferences
+- [ ] Data management controls
 
 ## Non-Goals for the First Version
 
@@ -193,9 +228,9 @@ Nimlo will not initially include:
 
 The goal is to ship a useful lightweight browser shell first.
 
-## Long-Term Ideas
+## Long-Term Goals
 
-Future directions may include:
+Future directions will include:
 
 - Reader mode
 - RSS support

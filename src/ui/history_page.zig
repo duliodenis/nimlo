@@ -119,6 +119,7 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\    const confirmDelete = document.getElementById("confirm-delete");
         \\    const cancelDelete = document.getElementById("cancel-delete");
         \\    let confirmingDelete = false;
+        \\    let lastSelectedIndex = null;
         \\    const label = (value) => `${value} ${value === 1 ? "visit" : "visits"}`;
         \\    const selectedLabel = (value) => `${value} selected`;
         \\    const hostFromUrl = (value) => {
@@ -132,6 +133,7 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\    const matchesSearch = (row, tokens) => tokens.length === 0 || tokens.every((token) => row.dataset.search.includes(token));
         \\    const selectedUrls = () => rows.filter((row) => row.querySelector(".select").checked).map((row) => row.dataset.url);
         \\    const visibleRows = () => rows.filter((row) => !row.classList.contains("hidden"));
+        \\    const selectedRows = () => rows.filter((row) => row.querySelector(".select").checked);
         \\    const actionHref = (action, urls) => `https://nimlo.internal/history/${action}?urls=${encodeURIComponent(urls.join("\n"))}`;
         \\    const updateSelection = () => {
         \\      const urls = selectedUrls();
@@ -153,6 +155,19 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\      targetRows.forEach((row) => {
         \\        row.querySelector(".select").checked = selected;
         \\      });
+        \\      if (!selected) lastSelectedIndex = null;
+        \\      updateSelection();
+        \\    };
+        \\    const setRangeSelected = (fromIndex, toIndex, selected) => {
+        \\      const start = Math.min(fromIndex, toIndex);
+        \\      const end = Math.max(fromIndex, toIndex);
+        \\      for (let index = start; index <= end; index += 1) {
+        \\        rows[index].querySelector(".select").checked = selected;
+        \\      }
+        \\      updateSelection();
+        \\    };
+        \\    const cancelDeleteConfirmation = () => {
+        \\      confirmingDelete = false;
         \\      updateSelection();
         \\    };
         \\    const groupLabel = (value) => {
@@ -216,9 +231,16 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\      const formatted = formatVisitedAt(Number.parseInt(node.dataset.visitedAt, 10));
         \\      if (formatted) node.textContent = formatted;
         \\    });
-        \\    rows.forEach((row) => {
+        \\    rows.forEach((row, index) => {
         \\      row.dataset.search = `${row.dataset.search} ${hostFromUrl(row.dataset.url)}`.toLowerCase();
-        \\      row.querySelector(".select").addEventListener("change", updateSelection);
+        \\      row.querySelector(".select").addEventListener("click", (event) => {
+        \\        if (event.shiftKey && lastSelectedIndex !== null) {
+        \\          setRangeSelected(lastSelectedIndex, index, event.currentTarget.checked);
+        \\        } else {
+        \\          updateSelection();
+        \\        }
+        \\        lastSelectedIndex = index;
+        \\      });
         \\    });
         \\    buildDayGroups();
         \\    updateSelection();
@@ -229,8 +251,24 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\      updateSelection();
         \\    });
         \\    cancelDelete.addEventListener("click", () => {
-        \\      confirmingDelete = false;
-        \\      updateSelection();
+        \\      cancelDeleteConfirmation();
+        \\    });
+        \\    document.addEventListener("keydown", (event) => {
+        \\      if (event.key === "Escape") {
+        \\        if (confirmingDelete) {
+        \\          cancelDeleteConfirmation();
+        \\        } else if (selectedRows().length > 0) {
+        \\          setRowsSelected(rows, false);
+        \\        }
+        \\      }
+        \\      if (event.key === "Enter" && confirmingDelete) {
+        \\        event.preventDefault();
+        \\        confirmDelete.click();
+        \\      }
+        \\      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a" && event.target !== search) {
+        \\        event.preventDefault();
+        \\        setRowsSelected(visibleRows(), true);
+        \\      }
         \\    });
         \\    search.addEventListener("input", () => {
         \\      const query = search.value.trim();
@@ -384,12 +422,20 @@ test "renders selection controls for history rows" {
     try std.testing.expect(std.mem.indexOf(u8, html, "class=\"select\" type=\"checkbox\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "const selectedUrls =") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "const visibleRows =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "const selectedRows =") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "const setRowsSelected =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "const setRangeSelected =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "let lastSelectedIndex = null") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "let confirmingDelete = false") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "selectionBar.classList.toggle(\"confirming\", confirmingDelete)") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "confirmDelete.href = urls.length === 0 ? \"#\" : actionHref(\"delete\", urls)") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "deleteSelected.addEventListener(\"click\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "cancelDelete.addEventListener(\"click\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "document.addEventListener(\"keydown\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "event.key === \"Escape\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "event.key === \"Enter\" && confirmingDelete") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "event.key.toLowerCase() === \"a\" && event.target !== search") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "event.shiftKey && lastSelectedIndex !== null") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "setRowsSelected(visibleRows(), true)") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "setRowsSelected(rows, false)") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "https://nimlo.internal/history/${action}?urls=") != null);

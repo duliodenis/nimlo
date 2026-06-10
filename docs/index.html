@@ -404,25 +404,66 @@
                 color: rgba(255, 253, 244, 0.76);
             }
 
-            .checks {
-                margin: 36px 0 0;
-                padding: 0;
-                list-style: none;
-                display: grid;
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-                gap: 12px;
+            .roadmap {
+                margin-top: 36px;
             }
 
-            .checks li {
-                min-height: 48px;
-                display: flex;
-                align-items: center;
-                gap: 11px;
-                padding: 13px 14px;
+            .roadmap h3 {
+                margin: 0;
+                color: #fffdf4;
+                font-size: clamp(1.5rem, 3vw, 2.1rem);
+                line-height: 1.1;
+            }
+
+            .roadmap-grid {
+                margin-top: 22px;
+                display: grid;
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+                gap: 14px;
+            }
+
+            .roadmap-item {
+                min-height: 150px;
+                padding: 18px;
+                border: 1px solid rgba(255, 253, 244, 0.12);
                 border-radius: 8px;
-                background: rgba(255, 253, 244, 0.08);
-                color: rgba(255, 253, 244, 0.9);
-                font-weight: 620;
+                background: rgba(255, 253, 244, 0.07);
+            }
+
+            .roadmap-item.complete {
+                border-color: rgba(198, 231, 163, 0.32);
+                background: rgba(198, 231, 163, 0.13);
+            }
+
+            .roadmap-item.current {
+                border-color: rgba(255, 253, 244, 0.26);
+                background: rgba(255, 253, 244, 0.12);
+            }
+
+            .roadmap-item.planned {
+                opacity: 0.82;
+            }
+
+            .roadmap-item .phase {
+                color: #c6e7a3;
+                font-size: 0.78rem;
+                font-weight: 760;
+                letter-spacing: 0;
+                text-transform: uppercase;
+            }
+
+            .roadmap-item h4 {
+                margin: 9px 0 0;
+                color: #fffdf4;
+                font-size: 1.05rem;
+                line-height: 1.24;
+            }
+
+            .roadmap-item p {
+                margin-top: 10px;
+                color: rgba(255, 253, 244, 0.72);
+                font-size: 0.94rem;
+                line-height: 1.55;
             }
 
             @media (prefers-reduced-motion: reduce) {
@@ -440,13 +481,6 @@
                 .word-rotator span:first-child {
                     opacity: 1;
                 }
-            }
-
-            .check {
-                width: 18px;
-                height: 18px;
-                flex: 0 0 auto;
-                color: #c6e7a3;
             }
 
             footer {
@@ -503,7 +537,7 @@
                 .split,
                 .download-inner,
                 .grid,
-                .checks {
+                .roadmap-grid {
                     grid-template-columns: 1fr;
                 }
 
@@ -530,7 +564,7 @@
                 </a>
                 <div class="nav-links">
                     <a href="#why">Why</a>
-                    <a href="#status">Status</a>
+                    <a href="#status">Roadmap</a>
                     <a href="https://github.com/duliodenis/nimlo">GitHub</a>
                     <a class="download-link" href="#download">Download</a>
                 </div>
@@ -564,7 +598,7 @@
                             >Download for Mac</a
                         >
                         <a class="button secondary" href="#status"
-                            >See browser status</a
+                            >See roadmap</a
                         >
                     </div>
                 </div>
@@ -672,110 +706,138 @@
 
             <section id="status" class="section status-band">
                 <div class="section-inner">
-                    <h2>Build status.</h2>
+                    <h2>Roadmap.</h2>
                     <p>
-                        Nimlo is not a production browser yet. The macOS edition
-                        currently focuses on a fast, minimal shell with reliable
-                        tab and WebView lifecycle behavior.
+                        Nimlo is not a production browser yet. The roadmap
+                        starts with a small, reliable shell and then builds
+                        local-first browser features around it.
                     </p>
-                    <ul class="checks">
-                        <li class="reveal" style="--reveal-delay: 0ms">
-                            <svg
-                                class="check"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                aria-hidden="true"
+                    <div class="roadmap">
+                        <div class="roadmap-grid">
+                            <article
+                                class="roadmap-item complete reveal"
+                                style="--reveal-delay: 0ms"
                             >
-                                <path
-                                    d="m5 12 4 4 10-10"
-                                    stroke="currentColor"
-                                    stroke-width="2.4"
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                /></svg
-                            >Native macOS window chrome
-                        </li>
-                        <li class="reveal" style="--reveal-delay: 70ms">
-                            <svg
-                                class="check"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                aria-hidden="true"
+                                <span class="phase">0.1 Complete</span>
+                                <h4>First Window</h4>
+                                <p>
+                                    Launches as a macOS app, opens a desktop
+                                    window, embeds WebKit, loads the start page,
+                                    and accepts typed URLs.
+                                </p>
+                            </article>
+                            <article
+                                class="roadmap-item complete reveal"
+                                style="--reveal-delay: 60ms"
                             >
-                                <path
-                                    d="m5 12 4 4 10-10"
-                                    stroke="currentColor"
-                                    stroke-width="2.4"
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                /></svg
-                            >Independent WebView per tab
-                        </li>
-                        <li class="reveal" style="--reveal-delay: 140ms">
-                            <svg
-                                class="check"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                aria-hidden="true"
+                                <span class="phase">0.2 Complete</span>
+                                <h4>Basic Browser Controls</h4>
+                                <p>
+                                    Address bar, back, forward, reload, stop,
+                                    and page title updates are in place for
+                                    everyday navigation.
+                                </p>
+                            </article>
+                            <article
+                                class="roadmap-item complete reveal"
+                                style="--reveal-delay: 120ms"
                             >
-                                <path
-                                    d="m5 12 4 4 10-10"
-                                    stroke="currentColor"
-                                    stroke-width="2.4"
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                /></svg
-                            >Address bar and navigation controls
-                        </li>
-                        <li class="reveal" style="--reveal-delay: 210ms">
-                            <svg
-                                class="check"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                aria-hidden="true"
+                                <span class="phase">0.3 Complete</span>
+                                <h4>Tabs</h4>
+                                <p>
+                                    Nimlo supports new, close, and switch tab
+                                    flows with independent WebView state and
+                                    native WebView cleanup.
+                                </p>
+                            </article>
+                            <article
+                                class="roadmap-item complete reveal"
+                                style="--reveal-delay: 180ms"
                             >
-                                <path
-                                    d="m5 12 4 4 10-10"
-                                    stroke="currentColor"
-                                    stroke-width="2.4"
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                /></svg
-                            >New, close, and switch tabs
-                        </li>
-                        <li class="reveal" style="--reveal-delay: 280ms">
-                            <svg
-                                class="check"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                aria-hidden="true"
+                                <span class="phase">0.4 Complete</span>
+                                <h4>Keyboard and Menu Commands</h4>
+                                <p>
+                                    Common browser commands are available from
+                                    the menu and keyboard, including tab,
+                                    navigation, reload, and address focus.
+                                </p>
+                            </article>
+                            <article
+                                class="roadmap-item current reveal"
+                                style="--reveal-delay: 240ms"
                             >
-                                <path
-                                    d="m5 12 4 4 10-10"
-                                    stroke="currentColor"
-                                    stroke-width="2.4"
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                /></svg
-                            >Nonpersistent WebKit data store
-                        </li>
-                        <li class="reveal" style="--reveal-delay: 350ms">
-                            <svg
-                                class="check"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                aria-hidden="true"
+                                <span class="phase">0.5 In progress</span>
+                                <h4>History &amp; Bookmarks</h4>
+                                <p>
+                                    History is persisted, searchable, grouped by
+                                    day, and supports multi-select actions.
+                                    Bookmarks are the remaining part.
+                                </p>
+                            </article>
+                            <article
+                                class="roadmap-item planned reveal"
+                                style="--reveal-delay: 300ms"
                             >
-                                <path
-                                    d="m5 12 4 4 10-10"
-                                    stroke="currentColor"
-                                    stroke-width="2.4"
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                /></svg
-                            >No ads, telemetry, or accounts
-                        </li>
-                    </ul>
+                                <span class="phase">0.6 Planned</span>
+                                <h4>Window and Tab Management</h4>
+                                <p>
+                                    Add tab reordering, detached tabs,
+                                    multi-window tab movement, and per-window
+                                    active tab state.
+                                </p>
+                            </article>
+                            <article
+                                class="roadmap-item planned reveal"
+                                style="--reveal-delay: 360ms"
+                            >
+                                <span class="phase">0.7 Planned</span>
+                                <h4>Downloads</h4>
+                                <p>
+                                    Track downloads, add a
+                                    <code>nimlo://downloads</code> page, persist
+                                    metadata, open files, and reveal them in
+                                    Finder.
+                                </p>
+                            </article>
+                            <article
+                                class="roadmap-item planned reveal"
+                                style="--reveal-delay: 420ms"
+                            >
+                                <span class="phase">0.8 Planned</span>
+                                <h4>Content Blocking</h4>
+                                <p>
+                                    Explore uBlock Origin-inspired blocking with
+                                    filter-list support, URL-level hooks,
+                                    per-site controls, and WebKit cosmetic
+                                    filtering research.
+                                </p>
+                            </article>
+                            <article
+                                class="roadmap-item planned reveal"
+                                style="--reveal-delay: 480ms"
+                            >
+                                <span class="phase">0.9 Planned</span>
+                                <h4>Private Mode UX</h4>
+                                <p>
+                                    Turn the private-mode foundation into a
+                                    visible incognito experience with private
+                                    tab/window flows and clear indicators.
+                                </p>
+                            </article>
+                            <article
+                                class="roadmap-item planned reveal"
+                                style="--reveal-delay: 540ms"
+                            >
+                                <span class="phase">1.0 Planned</span>
+                                <h4>Settings</h4>
+                                <p>
+                                    Add user-facing controls for search,
+                                    homepage, downloads, theme, private
+                                    behavior, content blocking, and local data.
+                                </p>
+                            </article>
+                        </div>
+                    </div>
                 </div>
             </section>
         </main>

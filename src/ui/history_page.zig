@@ -36,6 +36,7 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\    @media (prefers-color-scheme:dark){.button-link.danger{border-color:#f97066;color:#f97066}.button-link.danger:hover{background:color-mix(in srgb,#f97066 14%,transparent)}}
         \\    .text-button{height:34px;border:0;background:transparent;color:var(--accent);padding:0 4px;font:inherit;font-weight:600;white-space:nowrap;cursor:pointer}
         \\    .text-button:hover{text-decoration:underline;text-underline-offset:3px}
+        \\    .confirm-text{color:var(--text);font-size:13px;font-weight:600}
         \\    .selection-bar{display:flex;gap:10px;align-items:center;justify-content:flex-end;margin:-6px 0 14px}
         \\    .selected-count{color:var(--muted);font-size:13px;margin-right:2px}
         \\    .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
@@ -82,7 +83,10 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\      <button class="text-button" id="select-visible" type="button">Select visible</button>
         \\      <button class="text-button" id="clear-selection" type="button">Clear selection</button>
         \\      <a class="button-link" id="open-selected" href="#">Open</a>
-        \\      <a class="button-link danger" id="delete-selected" href="#">Delete</a>
+        \\      <button class="button-link danger" id="delete-selected" type="button">Delete</button>
+        \\      <span class="confirm-text hidden" id="confirm-text">Delete selected history?</span>
+        \\      <a class="button-link danger hidden" id="confirm-delete" href="#">Confirm delete</a>
+        \\      <button class="button-link hidden" id="cancel-delete" type="button">Cancel</button>
         \\    </div>
         \\    <section class="panel" id="history">
     );
@@ -109,6 +113,10 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\    const clearSelection = document.getElementById("clear-selection");
         \\    const openSelected = document.getElementById("open-selected");
         \\    const deleteSelected = document.getElementById("delete-selected");
+        \\    const confirmText = document.getElementById("confirm-text");
+        \\    const confirmDelete = document.getElementById("confirm-delete");
+        \\    const cancelDelete = document.getElementById("cancel-delete");
+        \\    let confirmingDelete = false;
         \\    const label = (value) => `${value} ${value === 1 ? "visit" : "visits"}`;
         \\    const selectedLabel = (value) => `${value} selected`;
         \\    const hostFromUrl = (value) => {
@@ -128,7 +136,16 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\      selectionBar.classList.toggle("hidden", urls.length === 0);
         \\      selectedCount.textContent = selectedLabel(urls.length);
         \\      openSelected.href = urls.length === 0 ? "#" : actionHref("open", urls);
-        \\      deleteSelected.href = urls.length === 0 ? "#" : actionHref("delete", urls);
+        \\      confirmDelete.href = urls.length === 0 ? "#" : actionHref("delete", urls);
+        \\      confirmingDelete = confirmingDelete && urls.length > 0;
+        \\      selectionBar.classList.toggle("confirming", confirmingDelete);
+        \\      selectVisible.classList.toggle("hidden", confirmingDelete);
+        \\      clearSelection.classList.toggle("hidden", confirmingDelete);
+        \\      openSelected.classList.toggle("hidden", confirmingDelete);
+        \\      deleteSelected.classList.toggle("hidden", confirmingDelete);
+        \\      confirmText.classList.toggle("hidden", !confirmingDelete);
+        \\      confirmDelete.classList.toggle("hidden", !confirmingDelete);
+        \\      cancelDelete.classList.toggle("hidden", !confirmingDelete);
         \\    };
         \\    const setRowsSelected = (targetRows, selected) => {
         \\      targetRows.forEach((row) => {
@@ -197,6 +214,14 @@ pub fn render(allocator: std.mem.Allocator, entries: []const history.HistoryEntr
         \\    updateSelection();
         \\    selectVisible.addEventListener("click", () => setRowsSelected(visibleRows(), true));
         \\    clearSelection.addEventListener("click", () => setRowsSelected(rows, false));
+        \\    deleteSelected.addEventListener("click", () => {
+        \\      confirmingDelete = selectedUrls().length > 0;
+        \\      updateSelection();
+        \\    });
+        \\    cancelDelete.addEventListener("click", () => {
+        \\      confirmingDelete = false;
+        \\      updateSelection();
+        \\    });
         \\    search.addEventListener("input", () => {
         \\      const query = search.value.trim();
         \\      const tokens = searchTokens(query);
@@ -343,10 +368,18 @@ test "renders selection controls for history rows" {
     try std.testing.expect(std.mem.indexOf(u8, html, "id=\"clear-selection\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "id=\"open-selected\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "id=\"delete-selected\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "id=\"confirm-delete\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "id=\"cancel-delete\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "Delete selected history?") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "class=\"select\" type=\"checkbox\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "const selectedUrls =") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "const visibleRows =") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "const setRowsSelected =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "let confirmingDelete = false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "selectionBar.classList.toggle(\"confirming\", confirmingDelete)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "confirmDelete.href = urls.length === 0 ? \"#\" : actionHref(\"delete\", urls)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "deleteSelected.addEventListener(\"click\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "cancelDelete.addEventListener(\"click\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "setRowsSelected(visibleRows(), true)") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "setRowsSelected(rows, false)") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "https://nimlo.internal/history/${action}?urls=") != null);

@@ -18,6 +18,9 @@ pub fn run() !void {
     var engine = webview.WebViewAdapter.init();
     var core = browser.Browser.init(config, privacy, &engine);
     defer core.deinit();
+    const data_dir_path = try defaultAppDataDirectoryPath(std.heap.page_allocator);
+    defer std.heap.page_allocator.free(data_dir_path);
+    try ensurePersistenceDirectory(data_dir_path);
     const history_path = try defaultHistoryPersistencePath(std.heap.page_allocator);
     defer std.heap.page_allocator.free(history_path);
     try core.enableHistoryPersistence(history_path);
@@ -49,17 +52,28 @@ fn loadHomepage(engine: *webview.WebViewAdapter, homepage_url: []const u8) !void
 }
 
 fn defaultHistoryPersistencePath(allocator: std.mem.Allocator) ![]u8 {
-    if (std.c.getenv("HOME")) |home_z| {
-        return std.fmt.allocPrint(allocator, "{s}/.nimlo-history.jsonl", .{std.mem.span(home_z)});
-    }
-
-    return allocator.dupe(u8, ".nimlo-history.jsonl");
+    return defaultPersistenceFilePath(allocator, "history.jsonl");
 }
 
 fn defaultBookmarksPersistencePath(allocator: std.mem.Allocator) ![]u8 {
+    return defaultPersistenceFilePath(allocator, "bookmarks.jsonl");
+}
+
+fn defaultPersistenceFilePath(allocator: std.mem.Allocator, filename: []const u8) ![]u8 {
+    const data_dir_path = try defaultAppDataDirectoryPath(allocator);
+    defer allocator.free(data_dir_path);
+
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ data_dir_path, filename });
+}
+
+fn defaultAppDataDirectoryPath(allocator: std.mem.Allocator) ![]u8 {
     if (std.c.getenv("HOME")) |home_z| {
-        return std.fmt.allocPrint(allocator, "{s}/.nimlo-bookmarks.jsonl", .{std.mem.span(home_z)});
+        return std.fmt.allocPrint(allocator, "{s}/.nimlo", .{std.mem.span(home_z)});
     }
 
-    return allocator.dupe(u8, ".nimlo-bookmarks.jsonl");
+    return allocator.dupe(u8, ".nimlo");
+}
+
+fn ensurePersistenceDirectory(path: []const u8) !void {
+    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, path);
 }

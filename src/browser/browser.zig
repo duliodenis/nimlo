@@ -1,10 +1,12 @@
 const std = @import("std");
+const bookmarks = @import("../storage/bookmarks.zig");
 const history = @import("../storage/history.zig");
 const preferences = @import("../storage/preferences.zig");
 const private_mode = @import("../privacy/private_mode.zig");
 const tab_manager = @import("tab_manager.zig");
 const tab_model = @import("tab.zig");
 const about_page = @import("../ui/about_page.zig");
+const bookmarks_page = @import("../ui/bookmarks_page.zig");
 const history_page = @import("../ui/history_page.zig");
 const start_page = @import("../ui/start_page.zig");
 const webview = @import("../webview/webview_adapter.zig");
@@ -15,6 +17,9 @@ pub const Browser = struct {
     preferences: preferences.Preferences,
     private_mode: private_mode.PrivateModeConfig,
     tabs: tab_manager.TabManager,
+    bookmarks: bookmarks.BookmarkStore,
+    bookmarks_persistence_dir: ?std.Io.Dir,
+    bookmarks_persistence_path: ?[]const u8,
     history: history.HistoryStore,
     next_history_timestamp: i64,
     history_persistence_dir: ?std.Io.Dir,
@@ -34,6 +39,9 @@ pub const Browser = struct {
             .preferences = prefs,
             .private_mode = privacy,
             .tabs = tab_manager.TabManager.init(allocator),
+            .bookmarks = bookmarks.BookmarkStore.init(allocator),
+            .bookmarks_persistence_dir = null,
+            .bookmarks_persistence_path = null,
             .history = history.HistoryStore.init(allocator),
             .next_history_timestamp = 0,
             .history_persistence_dir = null,
@@ -45,6 +53,24 @@ pub const Browser = struct {
 
     pub fn enableHistoryPersistence(self: *Browser, path: []const u8) !void {
         try self.enableHistoryPersistenceInDir(std.Io.Dir.cwd(), path);
+    }
+
+    pub fn enableBookmarkPersistence(self: *Browser, path: []const u8) !void {
+        try self.enableBookmarkPersistenceInDir(std.Io.Dir.cwd(), path);
+    }
+
+    pub fn enableBookmarkPersistenceInDir(self: *Browser, dir: std.Io.Dir, path: []const u8) !void {
+        const owned_path = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(owned_path);
+
+        try self.bookmarks.loadFromFile(dir, std.Options.debug_io, owned_path);
+
+        if (self.bookmarks_persistence_path) |old_path| {
+            self.allocator.free(old_path);
+        }
+        self.bookmarks_persistence_dir = dir;
+        self.bookmarks_persistence_path = owned_path;
+        try self.bookmarks.saveToFile(dir, std.Options.debug_io, owned_path);
     }
 
     pub fn enableHistoryPersistenceInDir(self: *Browser, dir: std.Io.Dir, path: []const u8) !void {
@@ -90,6 +116,10 @@ pub const Browser = struct {
         webview_events.clearSink();
         webview_events.clearChromeSink();
         self.last_published_tabs.deinit(self.allocator);
+        self.bookmarks.deinit();
+        if (self.bookmarks_persistence_path) |path| {
+            self.allocator.free(path);
+        }
         self.history.deinit();
         if (self.history_persistence_path) |path| {
             self.allocator.free(path);
@@ -309,6 +339,14 @@ pub const Browser = struct {
         }
         if (std.mem.eql(u8, tab.current_url, "nimlo://about")) {
             try self.webview_adapter.loadHtml(about_page.html, tab.current_url);
+            return;
+        }
+        if (std.mem.eql(u8, tab.current_url, "nimlo://bookmarks")) {
+            self.bookmarks.canonicalize();
+            const html = try bookmarks_page.render(self.allocator, self.bookmarks.entries());
+            defer self.allocator.free(html);
+
+            try self.webview_adapter.loadHtml(html, tab.current_url);
             return;
         }
         if (std.mem.eql(u8, tab.current_url, "nimlo://history")) {
@@ -633,6 +671,41 @@ test "history persistence loads existing visits and saves new visits" {
     try std.testing.expect(loaded.entries()[1].visited_at >= browser.history.entries()[0].visited_at);
 }
 
+test "bookmark persistence loads existing bookmarks and saves canonical file" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var seeded = bookmarks.BookmarkStore.init(std.testing.allocator);
+    defer seeded.deinit();
+    try seeded.addOrUpdate("https://example.com/old", "Old", 41);
+    try seeded.addOrUpdate("https://example.com/new", "New", 42);
+    try seeded.saveToFile(tmp_dir.dir, std.testing.io, "bookmarks.jsonl");
+
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.enableBookmarkPersistenceInDir(tmp_dir.dir, "bookmarks.jsonl");
+
+    try std.testing.expectEqual(@as(usize, 2), browser.bookmarks.entries().len);
+    try std.testing.expectEqualStrings("https://example.com/new", browser.bookmarks.entries()[0].url);
+
+    try browser.bookmarks.addOrUpdate("https://example.com/old", "Old Updated", 43);
+    try browser.bookmarks.saveToFile(tmp_dir.dir, std.testing.io, "bookmarks.jsonl");
+
+    var loaded = bookmarks.BookmarkStore.init(std.testing.allocator);
+    defer loaded.deinit();
+    try loaded.loadFromFile(tmp_dir.dir, std.testing.io, "bookmarks.jsonl");
+
+    try std.testing.expectEqual(@as(usize, 2), loaded.entries().len);
+    try std.testing.expectEqualStrings("https://example.com/old", loaded.entries()[0].url);
+    try std.testing.expectEqualStrings("Old Updated", loaded.entries()[0].title);
+}
+
 test "history persistence updates latest visit for repeated completed navigation" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -898,6 +971,24 @@ test "open url command creates about tab" {
     const active_tab = browser.tabs.activeTab().?;
     try std.testing.expectEqualStrings("nimlo://about", active_tab.current_url);
     try std.testing.expectEqualStrings("About Nimlo", active_tab.title);
+}
+
+test "open url command creates bookmarks tab" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.start();
+    webview_events.emitUrlOpenRequested("nimlo://bookmarks");
+
+    try std.testing.expectEqual(@as(usize, 2), browser.tabs.len());
+    const active_tab = browser.tabs.activeTab().?;
+    try std.testing.expectEqualStrings("nimlo://bookmarks", active_tab.current_url);
+    try std.testing.expectEqualStrings("Bookmarks", active_tab.title);
 }
 
 test "open url command activates existing about tab" {

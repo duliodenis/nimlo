@@ -21,6 +21,9 @@ pub fn run() !void {
     const history_path = try defaultHistoryPersistencePath(std.heap.page_allocator);
     defer std.heap.page_allocator.free(history_path);
     try core.enableHistoryPersistence(history_path);
+    const bookmarks_path = try defaultBookmarksPersistencePath(std.heap.page_allocator);
+    defer std.heap.page_allocator.free(bookmarks_path);
+    try core.enableBookmarkPersistence(bookmarks_path);
 
     // TODO(app shell): add browser chrome, commands, menus, and shortcuts.
     // TODO(webview): replace the scaffold with a real system WebView mount.
@@ -51,4 +54,12 @@ fn defaultHistoryPersistencePath(allocator: std.mem.Allocator) ![]u8 {
     }
 
     return allocator.dupe(u8, ".nimlo-history.jsonl");
+}
+
+fn defaultBookmarksPersistencePath(allocator: std.mem.Allocator) ![]u8 {
+    if (std.c.getenv("HOME")) |home_z| {
+        return std.fmt.allocPrint(allocator, "{s}/.nimlo-bookmarks.jsonl", .{std.mem.span(home_z)});
+    }
+
+    return allocator.dupe(u8, ".nimlo-bookmarks.jsonl");
 }

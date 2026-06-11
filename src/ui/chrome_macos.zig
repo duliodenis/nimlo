@@ -65,6 +65,7 @@ const NSUTF8StringEncoding: usize = 4;
 const NSLineBreakByTruncatingTail: isize = 4;
 const NSEventModifierFlagShift: usize = 1 << 17;
 const NSEventModifierFlagControl: usize = 1 << 18;
+const NSEventModifierFlagOption: usize = 1 << 19;
 const NSEventModifierFlagCommand: usize = 1 << 20;
 
 const NSViewMinYMargin: usize = 1 << 3;
@@ -157,6 +158,10 @@ pub fn noteInternalLoadForUrl(webview: Id, url: []const u8) void {
     }
     if (std.mem.eql(u8, url, "nimlo://history")) {
         noteInternalPageLoad(webview, "nimlo://history", "History", "clock.arrow.circlepath", "History");
+        return;
+    }
+    if (std.mem.eql(u8, url, "nimlo://bookmarks")) {
+        noteInternalPageLoad(webview, "nimlo://bookmarks", "Bookmarks", "bookmark", "Bookmarks");
         return;
     }
 
@@ -731,6 +736,7 @@ fn tabImage(tab: webview_events.TabSnapshot) Id {
 fn defaultFaviconForTab(tab: webview_events.TabSnapshot) Id {
     if (std.mem.eql(u8, tab.url, "nimlo://start")) return systemSymbol("sparkles", "Nimlo");
     if (std.mem.eql(u8, tab.url, "nimlo://about")) return systemSymbol("info.circle", "About Nimlo");
+    if (std.mem.eql(u8, tab.url, "nimlo://bookmarks")) return systemSymbol("bookmark", "Bookmarks");
     return defaultFavicon();
 }
 
@@ -849,6 +855,7 @@ fn installCommandMenus(target: Id) void {
         addMenuItem(navigate_menu, "Next Tab", sel("nextTab:"), "\t", NSEventModifierFlagControl, target);
         addMenuItem(navigate_menu, "Previous Tab", sel("previousTab:"), "\t", NSEventModifierFlagControl | NSEventModifierFlagShift, target);
         msg1(void, navigate_menu, sel("addItem:"), msg0(Id, cls("NSMenuItem"), sel("separatorItem")));
+        addMenuItem(navigate_menu, "Bookmarks", sel("showBookmarks:"), "b", NSEventModifierFlagCommand | NSEventModifierFlagOption, target);
         addMenuItem(navigate_menu, "History", sel("showHistory:"), "y", NSEventModifierFlagCommand, target);
         addMenuItem(navigate_menu, "Clear History", sel("clearHistory:"), "", 0, target);
         msg1(void, navigate_item, sel("setTitle:"), nsString("Navigate"));
@@ -970,6 +977,12 @@ fn installAddressBarTargetClass() void {
         target_class,
         c.sel_registerName("showHistory:"),
         @ptrCast(&showHistory),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("showBookmarks:"),
+        @ptrCast(&showBookmarks),
         "v@:@",
     );
     _ = c.class_addMethod(
@@ -1162,6 +1175,12 @@ fn showHistory(target: Id, _: Sel, _: Id) callconv(.c) void {
     _ = target;
     webview_events.emitUrlOpenRequested("nimlo://history");
     std.debug.print("history page requested.\n", .{});
+}
+
+fn showBookmarks(target: Id, _: Sel, _: Id) callconv(.c) void {
+    _ = target;
+    webview_events.emitUrlOpenRequested("nimlo://bookmarks");
+    std.debug.print("bookmarks page requested.\n", .{});
 }
 
 fn clearHistory(target: Id, _: Sel, _: Id) callconv(.c) void {
@@ -2008,6 +2027,7 @@ fn titleFromWebViewUrl(webview: Id) ?[]const u8 {
     const url = webViewUrl(webview) orelse return null;
     if (std.mem.eql(u8, url, "nimlo://start")) return "Nimlo";
     if (std.mem.eql(u8, url, "nimlo://about")) return "About Nimlo";
+    if (std.mem.eql(u8, url, "nimlo://bookmarks")) return "Bookmarks";
 
     const scheme_end = std.mem.indexOf(u8, url, "://") orelse return url;
     const host_start = scheme_end + 3;

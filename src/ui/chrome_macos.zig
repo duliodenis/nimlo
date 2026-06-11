@@ -212,6 +212,8 @@ fn addToolbar(content_view: Id, bounds: CGRect, webview: Id) !Id {
     _ = try addToolbarButton(content_view, target, "chevron.right", "Forward", "goForward:", button_x, button_y);
     button_x += nav_button_size + nav_button_gap;
     current_reload_button = try addToolbarButton(content_view, target, "arrow.clockwise", "Reload", "reload:", button_x, button_y);
+    button_x += nav_button_size + nav_button_gap;
+    _ = try addToolbarButton(content_view, target, "star", "Bookmark Current Page", "bookmarkCurrentPage:", button_x, button_y);
 
     const address_x = button_x + nav_button_size + nav_button_gap;
     const address_frame = CGRect{
@@ -855,6 +857,7 @@ fn installCommandMenus(target: Id) void {
         addMenuItem(navigate_menu, "Next Tab", sel("nextTab:"), "\t", NSEventModifierFlagControl, target);
         addMenuItem(navigate_menu, "Previous Tab", sel("previousTab:"), "\t", NSEventModifierFlagControl | NSEventModifierFlagShift, target);
         msg1(void, navigate_menu, sel("addItem:"), msg0(Id, cls("NSMenuItem"), sel("separatorItem")));
+        addMenuItem(navigate_menu, "Bookmark Current Page", sel("bookmarkCurrentPage:"), "d", NSEventModifierFlagCommand, target);
         addMenuItem(navigate_menu, "Bookmarks", sel("showBookmarks:"), "b", NSEventModifierFlagCommand | NSEventModifierFlagOption, target);
         addMenuItem(navigate_menu, "History", sel("showHistory:"), "y", NSEventModifierFlagCommand, target);
         addMenuItem(navigate_menu, "Clear History", sel("clearHistory:"), "", 0, target);
@@ -977,6 +980,12 @@ fn installAddressBarTargetClass() void {
         target_class,
         c.sel_registerName("showHistory:"),
         @ptrCast(&showHistory),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("bookmarkCurrentPage:"),
+        @ptrCast(&bookmarkCurrentPage),
         "v@:@",
     );
     _ = c.class_addMethod(
@@ -1175,6 +1184,12 @@ fn showHistory(target: Id, _: Sel, _: Id) callconv(.c) void {
     _ = target;
     webview_events.emitUrlOpenRequested("nimlo://history");
     std.debug.print("history page requested.\n", .{});
+}
+
+fn bookmarkCurrentPage(target: Id, _: Sel, _: Id) callconv(.c) void {
+    _ = target;
+    webview_events.emitBookmarkCurrentPageRequested();
+    std.debug.print("bookmark current page requested.\n", .{});
 }
 
 fn showBookmarks(target: Id, _: Sel, _: Id) callconv(.c) void {

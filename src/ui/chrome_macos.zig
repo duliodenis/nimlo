@@ -109,6 +109,8 @@ const NavigationDecisionHandler = extern struct {
 };
 
 var current_address_field: Id = null;
+var current_bookmark_button: Id = null;
+var current_bookmark_menu_item: Id = null;
 var current_reload_button: Id = null;
 var current_tab_icon: Id = null;
 var current_tab_label: Id = null;
@@ -213,7 +215,7 @@ fn addToolbar(content_view: Id, bounds: CGRect, webview: Id) !Id {
     button_x += nav_button_size + nav_button_gap;
     current_reload_button = try addToolbarButton(content_view, target, "arrow.clockwise", "Reload", "reload:", button_x, button_y);
     button_x += nav_button_size + nav_button_gap;
-    _ = try addToolbarButton(content_view, target, "star", "Bookmark Current Page", "bookmarkCurrentPage:", button_x, button_y);
+    current_bookmark_button = try addToolbarButton(content_view, target, "star", "Bookmark Current Page", "toggleBookmarkCurrentPage:", button_x, button_y);
 
     const address_x = button_x + nav_button_size + nav_button_gap;
     const address_frame = CGRect{
@@ -709,6 +711,7 @@ fn updateTitlebarContainerLayout() void {
 fn handleTabsChanged(_: *anyopaque, tabs: []const webview_events.TabSnapshot) void {
     current_tab_snapshots.clearRetainingCapacity();
     current_tab_snapshots.appendSlice(std.heap.page_allocator, tabs) catch return;
+    updateBookmarkControlForActiveTab();
     renderTitlebarTabs(tabs) catch return;
 }
 
@@ -857,8 +860,9 @@ fn installCommandMenus(target: Id) void {
         addMenuItem(navigate_menu, "Next Tab", sel("nextTab:"), "\t", NSEventModifierFlagControl, target);
         addMenuItem(navigate_menu, "Previous Tab", sel("previousTab:"), "\t", NSEventModifierFlagControl | NSEventModifierFlagShift, target);
         msg1(void, navigate_menu, sel("addItem:"), msg0(Id, cls("NSMenuItem"), sel("separatorItem")));
-        addMenuItem(navigate_menu, "Bookmark Current Page", sel("bookmarkCurrentPage:"), "d", NSEventModifierFlagCommand, target);
+        current_bookmark_menu_item = addMenuItemWithResult(navigate_menu, "Bookmark Current Page", sel("toggleBookmarkCurrentPage:"), "d", NSEventModifierFlagCommand, target);
         addMenuItem(navigate_menu, "Bookmarks", sel("showBookmarks:"), "b", NSEventModifierFlagCommand | NSEventModifierFlagOption, target);
+        msg1(void, navigate_menu, sel("addItem:"), msg0(Id, cls("NSMenuItem"), sel("separatorItem")));
         addMenuItem(navigate_menu, "History", sel("showHistory:"), "y", NSEventModifierFlagCommand, target);
         addMenuItem(navigate_menu, "Clear History", sel("clearHistory:"), "", 0, target);
         msg1(void, navigate_item, sel("setTitle:"), nsString("Navigate"));
@@ -871,7 +875,11 @@ fn installCommandMenus(target: Id) void {
 }
 
 fn addMenuItem(menu: Id, title: [:0]const u8, action: Sel, key: [:0]const u8, modifiers: usize, target: Id) void {
-    if (menu == null) return;
+    _ = addMenuItemWithResult(menu, title, action, key, modifiers, target);
+}
+
+fn addMenuItemWithResult(menu: Id, title: [:0]const u8, action: Sel, key: [:0]const u8, modifiers: usize, target: Id) Id {
+    if (menu == null) return null;
 
     const item = msg3(
         Id,
@@ -881,11 +889,38 @@ fn addMenuItem(menu: Id, title: [:0]const u8, action: Sel, key: [:0]const u8, mo
         action,
         nsString(key),
     );
-    if (item == null) return;
+    if (item == null) return null;
 
     msg1(void, item, sel("setKeyEquivalentModifierMask:"), modifiers);
     if (target != null) msg1(void, item, sel("setTarget:"), target);
     msg1(void, menu, sel("addItem:"), item);
+    return item;
+}
+
+fn updateBookmarkControlForActiveTab() void {
+    const active_tab = activeTabSnapshot();
+    const can_bookmark = if (active_tab) |tab| tab.can_bookmark else false;
+    const is_bookmarked = if (active_tab) |tab| tab.is_bookmarked else false;
+
+    const title: [:0]const u8 = if (is_bookmarked) "Remove Bookmark" else "Bookmark Current Page";
+    const symbol: [:0]const u8 = if (is_bookmarked) "star.fill" else "star";
+
+    if (current_bookmark_button) |button| {
+        setToolbarButtonSymbol(button, symbol, title);
+        msg1(void, button, sel("setEnabled:"), can_bookmark);
+    }
+
+    if (current_bookmark_menu_item) |item| {
+        msg1(void, item, sel("setTitle:"), nsString(title));
+        msg1(void, item, sel("setEnabled:"), can_bookmark);
+    }
+}
+
+fn activeTabSnapshot() ?webview_events.TabSnapshot {
+    for (current_tab_snapshots.items) |tab| {
+        if (tab.is_active) return tab;
+    }
+    return null;
 }
 
 fn systemSymbol(symbol_name: [:0]const u8, accessibility_description: [:0]const u8) Id {
@@ -984,8 +1019,8 @@ fn installAddressBarTargetClass() void {
     );
     _ = c.class_addMethod(
         target_class,
-        c.sel_registerName("bookmarkCurrentPage:"),
-        @ptrCast(&bookmarkCurrentPage),
+        c.sel_registerName("toggleBookmarkCurrentPage:"),
+        @ptrCast(&toggleBookmarkCurrentPage),
         "v@:@",
     );
     _ = c.class_addMethod(
@@ -1186,10 +1221,10 @@ fn showHistory(target: Id, _: Sel, _: Id) callconv(.c) void {
     std.debug.print("history page requested.\n", .{});
 }
 
-fn bookmarkCurrentPage(target: Id, _: Sel, _: Id) callconv(.c) void {
+fn toggleBookmarkCurrentPage(target: Id, _: Sel, _: Id) callconv(.c) void {
     _ = target;
-    webview_events.emitBookmarkCurrentPageRequested();
-    std.debug.print("bookmark current page requested.\n", .{});
+    webview_events.emitBookmarkCurrentPageToggleRequested();
+    std.debug.print("bookmark current page toggle requested.\n", .{});
 }
 
 fn showBookmarks(target: Id, _: Sel, _: Id) callconv(.c) void {

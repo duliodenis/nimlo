@@ -101,7 +101,7 @@ pub const Browser = struct {
             .on_navigation = handleNavigationEvent,
             .on_new_tab_requested = handleNewTabRequested,
             .on_url_open_requested = handleUrlOpenRequested,
-            .on_bookmark_current_page_requested = handleBookmarkCurrentPageRequested,
+            .on_bookmark_current_page_toggle_requested = handleBookmarkCurrentPageToggleRequested,
             .on_internal_page_reload_requested = handleInternalPageReloadRequested,
             .on_history_clear_requested = handleHistoryClearRequested,
             .on_history_clear_confirmed_requested = handleHistoryClearConfirmedRequested,
@@ -193,9 +193,9 @@ pub const Browser = struct {
         self.openOrActivateUrl(url) catch return;
     }
 
-    fn handleBookmarkCurrentPageRequested(context: *anyopaque) void {
+    fn handleBookmarkCurrentPageToggleRequested(context: *anyopaque) void {
         const self: *Browser = @ptrCast(@alignCast(context));
-        self.bookmarkCurrentPage() catch return;
+        self.toggleBookmarkCurrentPage() catch return;
     }
 
     fn handleInternalPageReloadRequested(context: *anyopaque, source_handle: ?*anyopaque, url: []const u8) void {
@@ -266,17 +266,21 @@ pub const Browser = struct {
         self.history.clear();
     }
 
-    pub fn bookmarkCurrentPage(self: *Browser) !void {
+    pub fn toggleBookmarkCurrentPage(self: *Browser) !void {
         const active_tab = self.tabs.activeTab() orelse return;
-        if (active_tab.is_private) return;
-        if (!bookmarks.shouldStoreUrl(active_tab.current_url)) return;
+        if (!canBookmarkTab(active_tab.*)) return;
 
-        try self.bookmarks.addOrUpdate(
-            active_tab.current_url,
-            active_tab.title,
-            currentTimestamp(),
-        );
+        if (self.isBookmarked(active_tab.current_url)) {
+            _ = self.bookmarks.removeUrl(active_tab.current_url);
+        } else {
+            try self.bookmarks.addOrUpdate(
+                active_tab.current_url,
+                active_tab.title,
+                currentTimestamp(),
+            );
+        }
         try self.saveBookmarksIfPersistent();
+        self.publishTabsChanged();
     }
 
     fn saveBookmarksIfPersistent(self: *Browser) !void {
@@ -400,6 +404,8 @@ pub const Browser = struct {
                 .url = tab.current_url,
                 .favicon_url = tab.favicon_url,
                 .is_active = self.tabs.active_tab_id != null and self.tabs.active_tab_id.? == tab.id,
+                .can_bookmark = canBookmarkTab(tab),
+                .is_bookmarked = self.isBookmarked(tab.current_url),
             });
         }
 
@@ -417,6 +423,8 @@ pub const Browser = struct {
 
             const is_active = self.tabs.active_tab_id != null and self.tabs.active_tab_id.? == tab.id;
             if (is_active != snapshot.is_active) return false;
+            if (canBookmarkTab(tab) != snapshot.can_bookmark) return false;
+            if (self.isBookmarked(tab.current_url) != snapshot.is_bookmarked) return false;
         }
 
         return true;
@@ -429,10 +437,22 @@ pub const Browser = struct {
             .failed => .failed,
         };
     }
+
+    fn isBookmarked(self: *const Browser, url: []const u8) bool {
+        for (self.bookmarks.entries()) |entry| {
+            if (std.mem.eql(u8, entry.url, url)) return true;
+        }
+        return false;
+    }
 };
 
 fn currentTimestamp() i64 {
     return std.Io.Clock.real.now(std.Options.debug_io).toMilliseconds();
+}
+
+fn canBookmarkTab(tab: tab_model.Tab) bool {
+    if (tab.is_private) return false;
+    return bookmarks.shouldStoreUrl(tab.current_url);
 }
 
 const ParsedHistoryUrls = struct {
@@ -521,6 +541,12 @@ const HistoryClearPromptRecorder = struct {
     source_handle: ?*anyopaque = null,
 };
 
+const BookmarkChromeStateRecorder = struct {
+    publish_count: usize = 0,
+    can_bookmark: bool = false,
+    is_bookmarked: bool = false,
+};
+
 fn recordHistoryEmptyPrompt(context: *anyopaque) void {
     const recorder: *HistoryClearPromptRecorder = @ptrCast(@alignCast(context));
     recorder.empty_count += 1;
@@ -530,6 +556,19 @@ fn recordHistoryClearConfirmationPrompt(context: *anyopaque, source_handle: ?*an
     const recorder: *HistoryClearPromptRecorder = @ptrCast(@alignCast(context));
     recorder.confirmation_count += 1;
     recorder.source_handle = source_handle;
+}
+
+fn recordBookmarkChromeState(context: *anyopaque, tabs: []const webview_events.TabSnapshot) void {
+    const recorder: *BookmarkChromeStateRecorder = @ptrCast(@alignCast(context));
+    recorder.publish_count += 1;
+    for (tabs) |tab| {
+        if (!tab.is_active) continue;
+        recorder.can_bookmark = tab.can_bookmark;
+        recorder.is_bookmarked = tab.is_bookmarked;
+        return;
+    }
+    recorder.can_bookmark = false;
+    recorder.is_bookmarked = false;
 }
 
 test "start creates one active startup tab" {
@@ -751,7 +790,7 @@ test "bookmark current page stores active external tab" {
         .title = "Example Docs",
         .loading_state = .idle,
     });
-    webview_events.emitBookmarkCurrentPageRequested();
+    webview_events.emitBookmarkCurrentPageToggleRequested();
 
     try std.testing.expectEqual(@as(usize, 1), browser.bookmarks.entries().len);
     try std.testing.expectEqualStrings("https://example.com/docs", browser.bookmarks.entries()[0].url);
@@ -759,7 +798,7 @@ test "bookmark current page stores active external tab" {
     try std.testing.expect(browser.bookmarks.entries()[0].created_at >= 1_000_000_000_000);
 }
 
-test "bookmark current page updates existing bookmark and persists it" {
+test "bookmark current page adds bookmark and persists it" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
@@ -778,16 +817,9 @@ test "bookmark current page updates existing bookmark and persists it" {
         .title = "Loading",
         .loading_state = .idle,
     });
-    webview_events.emitBookmarkCurrentPageRequested();
-    webview_events.emitNavigation(.{
-        .url = "https://example.com/docs",
-        .title = "Example Docs",
-        .loading_state = .idle,
-    });
-    webview_events.emitBookmarkCurrentPageRequested();
-
+    webview_events.emitBookmarkCurrentPageToggleRequested();
     try std.testing.expectEqual(@as(usize, 1), browser.bookmarks.entries().len);
-    try std.testing.expectEqualStrings("Example Docs", browser.bookmarks.entries()[0].title);
+    try std.testing.expectEqualStrings("Loading", browser.bookmarks.entries()[0].title);
 
     var loaded = bookmarks.BookmarkStore.init(std.testing.allocator);
     defer loaded.deinit();
@@ -795,7 +827,74 @@ test "bookmark current page updates existing bookmark and persists it" {
 
     try std.testing.expectEqual(@as(usize, 1), loaded.entries().len);
     try std.testing.expectEqualStrings("https://example.com/docs", loaded.entries()[0].url);
-    try std.testing.expectEqualStrings("Example Docs", loaded.entries()[0].title);
+    try std.testing.expectEqualStrings("Loading", loaded.entries()[0].title);
+}
+
+test "bookmark current page toggles existing bookmark off" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.enableBookmarkPersistenceInDir(tmp_dir.dir, "bookmarks.jsonl");
+    try browser.start();
+    webview_events.emitNavigation(.{
+        .url = "https://example.com/docs",
+        .title = "Example Docs",
+        .loading_state = .idle,
+    });
+    webview_events.emitBookmarkCurrentPageToggleRequested();
+    webview_events.emitBookmarkCurrentPageToggleRequested();
+
+    try std.testing.expectEqual(@as(usize, 0), browser.bookmarks.entries().len);
+
+    var loaded = bookmarks.BookmarkStore.init(std.testing.allocator);
+    defer loaded.deinit();
+    try loaded.loadFromFile(tmp_dir.dir, std.testing.io, "bookmarks.jsonl");
+
+    try std.testing.expectEqual(@as(usize, 0), loaded.entries().len);
+}
+
+test "bookmark current page publishes chrome bookmark state" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    var recorder = BookmarkChromeStateRecorder{};
+    webview_events.setChromeSink(.{
+        .context = &recorder,
+        .on_tabs_changed = recordBookmarkChromeState,
+    });
+
+    try browser.start();
+    try std.testing.expect(!recorder.can_bookmark);
+    try std.testing.expect(!recorder.is_bookmarked);
+
+    webview_events.emitNavigation(.{
+        .url = "https://example.com/docs",
+        .title = "Example Docs",
+        .loading_state = .idle,
+    });
+    try std.testing.expect(recorder.can_bookmark);
+    try std.testing.expect(!recorder.is_bookmarked);
+
+    webview_events.emitBookmarkCurrentPageToggleRequested();
+    try std.testing.expect(recorder.can_bookmark);
+    try std.testing.expect(recorder.is_bookmarked);
+
+    webview_events.emitBookmarkCurrentPageToggleRequested();
+    try std.testing.expect(recorder.can_bookmark);
+    try std.testing.expect(!recorder.is_bookmarked);
 }
 
 test "bookmark current page ignores internal and private tabs" {
@@ -812,13 +911,13 @@ test "bookmark current page ignores internal and private tabs" {
     defer browser.deinit();
 
     try browser.start();
-    webview_events.emitBookmarkCurrentPageRequested();
+    webview_events.emitBookmarkCurrentPageToggleRequested();
     webview_events.emitNavigation(.{
         .url = "https://private.example",
         .title = "Private",
         .loading_state = .idle,
     });
-    webview_events.emitBookmarkCurrentPageRequested();
+    webview_events.emitBookmarkCurrentPageToggleRequested();
 
     try std.testing.expectEqual(@as(usize, 0), browser.bookmarks.entries().len);
 }

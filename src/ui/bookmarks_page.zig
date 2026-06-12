@@ -33,6 +33,15 @@ pub fn render(allocator: std.mem.Allocator, entries: []const bookmarks.BookmarkE
         \\    .title{display:block;color:var(--text);font-weight:550;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
         \\    a.title:hover{text-decoration:underline;text-underline-offset:3px}
         \\    .url{margin-top:4px;color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        \\    .tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px;align-items:center}
+        \\    .tag{display:inline-flex;align-items:center;gap:4px;min-height:22px;border:1px solid var(--line);border-radius:999px;color:var(--text);background:color-mix(in srgb,var(--text) 4%,transparent);padding:2px 8px;font-size:12px;line-height:1;text-decoration:none}
+        \\    .tag-remove{color:var(--muted);text-decoration:none;font-weight:650}
+        \\    .tag-remove:hover{color:var(--text)}
+        \\    .tag-form{display:inline-flex;gap:6px;align-items:center}
+        \\    .tag-input{width:118px;height:24px;border:1px solid var(--line);border-radius:6px;background:var(--field);color:var(--text);padding:0 8px;font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+        \\    .tag-input:focus{outline:2px solid color-mix(in srgb,var(--accent) 24%,transparent);border-color:var(--accent)}
+        \\    .tag-submit{height:24px;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--text);padding:0 8px;font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-weight:600;cursor:pointer}
+        \\    .tag-submit:hover{background:color-mix(in srgb,var(--text) 7%,transparent)}
         \\    time{color:var(--muted);font-size:12px;text-align:right;white-space:nowrap}
         \\    .empty{padding:44px 16px;text-align:center;color:var(--muted)}
         \\    .hidden{display:none}
@@ -124,6 +133,10 @@ fn appendEntry(html: *std.ArrayList(u8), allocator: std.mem.Allocator, entry: bo
     try appendEscapedHtml(html, allocator, entry.title);
     try html.appendSlice(allocator, " ");
     try appendEscapedHtml(html, allocator, entry.url);
+    for (entry.tags) |tag| {
+        try html.appendSlice(allocator, " ");
+        try appendEscapedHtml(html, allocator, tag);
+    }
     try html.appendSlice(allocator, "\" data-url=\"");
     try appendEscapedHtml(html, allocator, entry.url);
     try html.appendSlice(allocator, "\"><div>");
@@ -142,7 +155,9 @@ fn appendEntry(html: *std.ArrayList(u8), allocator: std.mem.Allocator, entry: bo
 
     try html.appendSlice(allocator, "<div class=\"url\">");
     try appendEscapedHtml(html, allocator, entry.url);
-    try html.appendSlice(allocator, "</div></div><time data-created-at=\"");
+    try html.appendSlice(allocator, "</div>");
+    try appendTags(html, allocator, entry);
+    try html.appendSlice(allocator, "</div><time data-created-at=\"");
     const created = try std.fmt.allocPrint(allocator, "{d}", .{entry.created_at});
     defer allocator.free(created);
     try html.appendSlice(allocator, created);
@@ -151,6 +166,22 @@ fn appendEntry(html: *std.ArrayList(u8), allocator: std.mem.Allocator, entry: bo
     defer allocator.free(label);
     try appendEscapedHtml(html, allocator, label);
     try html.appendSlice(allocator, "</time></article>");
+}
+
+fn appendTags(html: *std.ArrayList(u8), allocator: std.mem.Allocator, entry: bookmarks.BookmarkEntry) !void {
+    try html.appendSlice(allocator, "<div class=\"tags\">");
+    for (entry.tags) |tag| {
+        try html.appendSlice(allocator, "<span class=\"tag\"><span>");
+        try appendEscapedHtml(html, allocator, tag);
+        try html.appendSlice(allocator, "</span><a class=\"tag-remove\" title=\"Remove tag\" href=\"https://nimlo.internal/bookmarks/tag/remove?url=");
+        try appendPercentEncoded(html, allocator, entry.url);
+        try html.appendSlice(allocator, "&amp;tag=");
+        try appendPercentEncoded(html, allocator, tag);
+        try html.appendSlice(allocator, "\">x</a></span>");
+    }
+    try html.appendSlice(allocator, "<form class=\"tag-form\" method=\"get\" action=\"https://nimlo.internal/bookmarks/tag/add\"><input type=\"hidden\" name=\"url\" value=\"");
+    try appendEscapedHtml(html, allocator, entry.url);
+    try html.appendSlice(allocator, "\"><input class=\"tag-input\" name=\"tag\" type=\"text\" placeholder=\"Add tag\" autocomplete=\"off\"><button class=\"tag-submit\" type=\"submit\">Add</button></form></div>");
 }
 
 fn titleForEntry(entry: bookmarks.BookmarkEntry) []const u8 {
@@ -184,6 +215,23 @@ fn appendEscapedHtml(output: *std.ArrayList(u8), allocator: std.mem.Allocator, t
     }
 }
 
+fn appendPercentEncoded(output: *std.ArrayList(u8), allocator: std.mem.Allocator, text: []const u8) !void {
+    const hex = "0123456789ABCDEF";
+    for (text) |byte| {
+        const unreserved = (byte >= 'a' and byte <= 'z') or
+            (byte >= 'A' and byte <= 'Z') or
+            (byte >= '0' and byte <= '9') or
+            byte == '-' or byte == '_' or byte == '.' or byte == '~';
+        if (unreserved) {
+            try output.append(allocator, byte);
+        } else {
+            try output.append(allocator, '%');
+            try output.append(allocator, hex[byte >> 4]);
+            try output.append(allocator, hex[byte & 0x0f]);
+        }
+    }
+}
+
 fn isLinkableUrl(url: []const u8) bool {
     return std.mem.startsWith(u8, url, "https://") or
         std.mem.startsWith(u8, url, "http://") or
@@ -201,8 +249,8 @@ test "renders empty bookmarks state" {
 
 test "renders bookmarks newest first and escapes content" {
     const entries = [_]bookmarks.BookmarkEntry{
-        .{ .url = "https://example.com/first", .title = "First", .created_at = 1 },
-        .{ .url = "https://example.com/?q=<tag>", .title = "Second & \"quoted\"", .created_at = 2 },
+        .{ .url = "https://example.com/first", .title = "First", .created_at = 1, .tags = &.{} },
+        .{ .url = "https://example.com/?q=<tag>", .title = "Second & \"quoted\"", .created_at = 2, .tags = &.{} },
     };
     const html = try render(std.testing.allocator, &entries);
     defer std.testing.allocator.free(html);
@@ -216,12 +264,25 @@ test "renders bookmarks newest first and escapes content" {
 
 test "renders search by title url and hostname support" {
     const entries = [_]bookmarks.BookmarkEntry{
-        .{ .url = "https://www.example.com/docs", .title = "Docs", .created_at = 1 },
+        .{ .url = "https://www.example.com/docs", .title = "Docs", .created_at = 1, .tags = &.{"zig"} },
     };
     const html = try render(std.testing.allocator, &entries);
     defer std.testing.allocator.free(html);
 
-    try std.testing.expect(std.mem.indexOf(u8, html, "data-search=\"Docs https://www.example.com/docs\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "data-search=\"Docs https://www.example.com/docs zig\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "hostFromUrl") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "row.dataset.search.includes(token)") != null);
+}
+
+test "renders tag chips and edit actions" {
+    const entries = [_]bookmarks.BookmarkEntry{
+        .{ .url = "https://example.com/docs?q=zig", .title = "Docs", .created_at = 1, .tags = &.{ "zig", "docs" } },
+    };
+    const html = try render(std.testing.allocator, &entries);
+    defer std.testing.allocator.free(html);
+
+    try std.testing.expect(std.mem.indexOf(u8, html, "class=\"tag\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "https://nimlo.internal/bookmarks/tag/add") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "https://nimlo.internal/bookmarks/tag/remove?url=https%3A%2F%2Fexample.com%2Fdocs%3Fq%3Dzig&amp;tag=zig") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "placeholder=\"Add tag\"") != null);
 }

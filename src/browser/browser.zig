@@ -107,6 +107,8 @@ pub const Browser = struct {
             .on_history_clear_confirmed_requested = handleHistoryClearConfirmedRequested,
             .on_history_urls_delete_requested = handleHistoryUrlsDeleteRequested,
             .on_history_urls_open_requested = handleHistoryUrlsOpenRequested,
+            .on_bookmark_tag_add_requested = handleBookmarkTagAddRequested,
+            .on_bookmark_tag_remove_requested = handleBookmarkTagRemoveRequested,
             .on_tab_activated_requested = handleTabActivatedRequested,
             .on_tab_closed_requested = handleTabClosedRequested,
         });
@@ -255,6 +257,31 @@ pub const Browser = struct {
         }
     }
 
+    fn handleBookmarkTagAddRequested(context: *anyopaque, source_handle: ?*anyopaque, request_url: []const u8) void {
+        const self: *Browser = @ptrCast(@alignCast(context));
+        var action = parseBookmarkTagAction(self.allocator, request_url) catch return;
+        defer action.deinit();
+
+        if (action.tag.len == 0) return;
+        const changed = self.bookmarks.addTag(action.url, action.tag) catch return;
+        if (!changed) return;
+
+        self.saveBookmarksIfPersistent() catch return;
+        self.reloadBookmarksPageIfActive(source_handle);
+    }
+
+    fn handleBookmarkTagRemoveRequested(context: *anyopaque, source_handle: ?*anyopaque, request_url: []const u8) void {
+        const self: *Browser = @ptrCast(@alignCast(context));
+        var action = parseBookmarkTagAction(self.allocator, request_url) catch return;
+        defer action.deinit();
+
+        const changed = self.bookmarks.removeTag(action.url, action.tag) catch return;
+        if (!changed) return;
+
+        self.saveBookmarksIfPersistent() catch return;
+        self.reloadBookmarksPageIfActive(source_handle);
+    }
+
     pub fn clearHistory(self: *Browser) !void {
         self.next_history_timestamp = 0;
         if (self.history_persistence_path) |path| {
@@ -287,6 +314,13 @@ pub const Browser = struct {
         if (self.bookmarks_persistence_path) |path| {
             const dir = self.bookmarks_persistence_dir orelse std.Io.Dir.cwd();
             try self.bookmarks.saveToFile(dir, std.Options.debug_io, path);
+        }
+    }
+
+    fn reloadBookmarksPageIfActive(self: *Browser, source_handle: ?*anyopaque) void {
+        const tab = self.tabs.findTabByWebView(source_handle) orelse self.tabs.activeTab() orelse return;
+        if (std.mem.eql(u8, tab.current_url, "nimlo://bookmarks")) {
+            self.loadTab(tab.*) catch return;
         }
     }
 
@@ -466,6 +500,51 @@ const ParsedHistoryUrls = struct {
         self.allocator.free(self.items);
     }
 };
+
+const ParsedBookmarkTagAction = struct {
+    allocator: std.mem.Allocator,
+    url: []const u8,
+    tag: []const u8,
+
+    fn deinit(self: *ParsedBookmarkTagAction) void {
+        self.allocator.free(self.url);
+        self.allocator.free(self.tag);
+    }
+};
+
+fn parseBookmarkTagAction(allocator: std.mem.Allocator, request_url: []const u8) !ParsedBookmarkTagAction {
+    const query_start = std.mem.indexOfScalar(u8, request_url, '?') orelse return .{
+        .allocator = allocator,
+        .url = try allocator.dupe(u8, ""),
+        .tag = try allocator.dupe(u8, ""),
+    };
+    const query = request_url[query_start + 1 ..];
+
+    var url_value: ?[]u8 = null;
+    errdefer if (url_value) |value| allocator.free(value);
+    var tag_value: ?[]u8 = null;
+    errdefer if (tag_value) |value| allocator.free(value);
+
+    var params = std.mem.splitScalar(u8, query, '&');
+    while (params.next()) |param| {
+        const equals = std.mem.indexOfScalar(u8, param, '=') orelse continue;
+        const key = param[0..equals];
+        const value = param[equals + 1 ..];
+        if (std.mem.eql(u8, key, "url")) {
+            if (url_value) |old| allocator.free(old);
+            url_value = try percentDecodeAlloc(allocator, value);
+        } else if (std.mem.eql(u8, key, "tag")) {
+            if (tag_value) |old| allocator.free(old);
+            tag_value = try percentDecodeAlloc(allocator, value);
+        }
+    }
+
+    return .{
+        .allocator = allocator,
+        .url = url_value orelse try allocator.dupe(u8, ""),
+        .tag = tag_value orelse try allocator.dupe(u8, ""),
+    };
+}
 
 fn parseHistoryActionUrls(allocator: std.mem.Allocator, request_url: []const u8) !ParsedHistoryUrls {
     const query_start = std.mem.indexOfScalar(u8, request_url, '?') orelse return .{
@@ -895,6 +974,46 @@ test "bookmark current page publishes chrome bookmark state" {
     webview_events.emitBookmarkCurrentPageToggleRequested();
     try std.testing.expect(recorder.can_bookmark);
     try std.testing.expect(!recorder.is_bookmarked);
+}
+
+test "bookmark tag action urls update memory and persistence" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.enableBookmarkPersistenceInDir(tmp_dir.dir, "bookmarks.jsonl");
+    try browser.start();
+    webview_events.emitNavigation(.{
+        .url = "https://example.com/docs",
+        .title = "Example Docs",
+        .loading_state = .idle,
+    });
+    webview_events.emitBookmarkCurrentPageToggleRequested();
+
+    webview_events.emitBookmarkTagAddRequested(null, "https://nimlo.internal/bookmarks/tag/add?url=https%3A%2F%2Fexample.com%2Fdocs&tag=Zig+Docs");
+    try std.testing.expectEqual(@as(usize, 1), browser.bookmarks.entries()[0].tags.len);
+    try std.testing.expectEqualStrings("Zig Docs", browser.bookmarks.entries()[0].tags[0]);
+
+    var loaded_after_add = bookmarks.BookmarkStore.init(std.testing.allocator);
+    defer loaded_after_add.deinit();
+    try loaded_after_add.loadFromFile(tmp_dir.dir, std.testing.io, "bookmarks.jsonl");
+    try std.testing.expectEqual(@as(usize, 1), loaded_after_add.entries()[0].tags.len);
+    try std.testing.expectEqualStrings("Zig Docs", loaded_after_add.entries()[0].tags[0]);
+
+    webview_events.emitBookmarkTagRemoveRequested(null, "https://nimlo.internal/bookmarks/tag/remove?url=https%3A%2F%2Fexample.com%2Fdocs&tag=zig%20docs");
+    try std.testing.expectEqual(@as(usize, 0), browser.bookmarks.entries()[0].tags.len);
+
+    var loaded_after_remove = bookmarks.BookmarkStore.init(std.testing.allocator);
+    defer loaded_after_remove.deinit();
+    try loaded_after_remove.loadFromFile(tmp_dir.dir, std.testing.io, "bookmarks.jsonl");
+    try std.testing.expectEqual(@as(usize, 0), loaded_after_remove.entries()[0].tags.len);
 }
 
 test "bookmark current page ignores internal and private tabs" {

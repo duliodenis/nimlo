@@ -1611,6 +1611,18 @@ fn decideNavigationPolicy(_: Id, _: Sel, webview: Id, navigation_action: Id, dec
         return;
     }
 
+    if (webViewIsInternal(webview) and std.mem.startsWith(u8, target_url, "https://nimlo.internal/bookmarks/tag/add?")) {
+        webview_events.emitBookmarkTagAddRequested(webview, target_url);
+        decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
+        return;
+    }
+
+    if (webViewIsInternal(webview) and std.mem.startsWith(u8, target_url, "https://nimlo.internal/bookmarks/tag/remove?")) {
+        webview_events.emitBookmarkTagRemoveRequested(webview, target_url);
+        decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
+        return;
+    }
+
     if (webViewIsInternal(webview) and isExternalWebUrl(target_url)) {
         webview_events.emitUrlOpenRequested(target_url);
         decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);

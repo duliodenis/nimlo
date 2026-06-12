@@ -27,6 +27,10 @@ pub fn render(allocator: std.mem.Allocator, entries: []const bookmarks.BookmarkE
         \\    .count{color:var(--muted);font-size:13px;margin-top:4px}
         \\    .search{width:min(360px,44vw);height:34px;border:1px solid var(--line);border-radius:6px;background:var(--field);color:var(--text);padding:0 11px;font:inherit}
         \\    .search:focus{outline:2px solid color-mix(in srgb,var(--accent) 28%,transparent);border-color:var(--accent)}
+        \\    .filter-bar{display:flex;flex-wrap:wrap;gap:8px;margin:-6px 0 14px}
+        \\    .filter-chip{min-height:28px;border:1px solid var(--line);border-radius:999px;background:transparent;color:var(--text);padding:4px 10px;font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-weight:600;cursor:pointer}
+        \\    .filter-chip:hover{background:color-mix(in srgb,var(--text) 7%,transparent)}
+        \\    .filter-chip.active{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 13%,transparent);color:var(--text)}
         \\    .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
         \\    .row{display:grid;grid-template-columns:minmax(0,1fr) 170px;gap:14px;padding:14px 16px;border-top:1px solid var(--line);align-items:center}
         \\    .row:first-child{border-top:0}
@@ -61,6 +65,7 @@ pub fn render(allocator: std.mem.Allocator, entries: []const bookmarks.BookmarkE
         \\      </div>
         \\      <input class="search" id="search" type="search" placeholder="Search bookmarks" autocomplete="off">
         \\    </header>
+        \\    <div class="filter-bar hidden" id="tag-filter"></div>
         \\    <section class="panel" id="bookmarks">
     );
 
@@ -79,6 +84,8 @@ pub fn render(allocator: std.mem.Allocator, entries: []const bookmarks.BookmarkE
         \\    const search = document.getElementById("search");
         \\    const rows = [...document.querySelectorAll(".row")];
         \\    const count = document.getElementById("count");
+        \\    const tagFilter = document.getElementById("tag-filter");
+        \\    let activeTag = "";
         \\    const label = (value) => `${value} ${value === 1 ? "bookmark" : "bookmarks"}`;
         \\    const hostFromUrl = (value) => {
         \\      try {
@@ -89,6 +96,9 @@ pub fn render(allocator: std.mem.Allocator, entries: []const bookmarks.BookmarkE
         \\    };
         \\    const searchTokens = (value) => value.trim().toLowerCase().split(/\s+/).filter(Boolean);
         \\    const matchesSearch = (row, tokens) => tokens.length === 0 || tokens.every((token) => row.dataset.search.includes(token));
+        \\    const rowTags = (row) => (row.dataset.tags || "").split("\n").filter(Boolean);
+        \\    const matchesTag = (row) => activeTag === "" || rowTags(row).some((tag) => tag.toLowerCase() === activeTag);
+        \\    const filterLabel = (tag, value) => tag === "" ? "All Tags" : `${tag} (${value})`;
         \\    const formatCreatedAt = (value) => {
         \\      if (!Number.isFinite(value) || value < 1000000000000) return null;
         \\      const date = new Date(value);
@@ -102,17 +112,51 @@ pub fn render(allocator: std.mem.Allocator, entries: []const bookmarks.BookmarkE
         \\    rows.forEach((row) => {
         \\      row.dataset.search = `${row.dataset.search} ${hostFromUrl(row.dataset.url)}`.toLowerCase();
         \\    });
-        \\    search.addEventListener("input", () => {
+        \\    const updateFilters = () => {
+        \\      if (rows.length === 0) return;
+        \\      const counts = new Map();
+        \\      for (const row of rows) {
+        \\        for (const tag of rowTags(row)) counts.set(tag, (counts.get(tag) || 0) + 1);
+        \\      }
+        \\      if (counts.size === 0) return;
+        \\      tagFilter.classList.remove("hidden");
+        \\      tagFilter.textContent = "";
+        \\      const tags = [...counts.keys()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+        \\      const options = [["", rows.length], ...tags.map((tag) => [tag, counts.get(tag)])];
+        \\      for (const [tag, tagCount] of options) {
+        \\        const button = document.createElement("button");
+        \\        button.className = "filter-chip";
+        \\        button.type = "button";
+        \\        button.dataset.tag = tag.toLowerCase();
+        \\        button.textContent = filterLabel(tag, tagCount);
+        \\        button.addEventListener("click", () => {
+        \\          activeTag = button.dataset.tag;
+        \\          applyFilters();
+        \\        });
+        \\        tagFilter.append(button);
+        \\      }
+        \\    };
+        \\    const updateFilterSelection = () => {
+        \\      tagFilter.querySelectorAll(".filter-chip").forEach((button) => {
+        \\        button.classList.toggle("active", button.dataset.tag === activeTag);
+        \\      });
+        \\    };
+        \\    const applyFilters = () => {
         \\      const query = search.value.trim();
         \\      const tokens = searchTokens(query);
         \\      let visible = 0;
         \\      for (const row of rows) {
-        \\        const match = matchesSearch(row, tokens);
+        \\        const match = matchesSearch(row, tokens) && matchesTag(row);
         \\        row.classList.toggle("hidden", !match);
         \\        if (match) visible += 1;
         \\      }
-        \\      count.textContent = query ? `${label(visible)} found` : label(rows.length);
-        \\    });
+        \\      const filtered = query || activeTag !== "";
+        \\      count.textContent = filtered ? `${label(visible)} found` : label(rows.length);
+        \\      updateFilterSelection();
+        \\    };
+        \\    updateFilters();
+        \\    applyFilters();
+        \\    search.addEventListener("input", applyFilters);
         \\  </script>
         \\</body>
         \\</html>
@@ -139,6 +183,11 @@ fn appendEntry(html: *std.ArrayList(u8), allocator: std.mem.Allocator, entry: bo
     }
     try html.appendSlice(allocator, "\" data-url=\"");
     try appendEscapedHtml(html, allocator, entry.url);
+    try html.appendSlice(allocator, "\" data-tags=\"");
+    for (entry.tags, 0..) |tag, index| {
+        if (index > 0) try html.append(allocator, '\n');
+        try appendEscapedHtml(html, allocator, tag);
+    }
     try html.appendSlice(allocator, "\"><div>");
 
     if (isLinkableUrl(entry.url)) {
@@ -270,6 +319,7 @@ test "renders search by title url and hostname support" {
     defer std.testing.allocator.free(html);
 
     try std.testing.expect(std.mem.indexOf(u8, html, "data-search=\"Docs https://www.example.com/docs zig\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "data-tags=\"zig\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "hostFromUrl") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "row.dataset.search.includes(token)") != null);
 }
@@ -285,4 +335,20 @@ test "renders tag chips and edit actions" {
     try std.testing.expect(std.mem.indexOf(u8, html, "https://nimlo.internal/bookmarks/tag/add") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "https://nimlo.internal/bookmarks/tag/remove?url=https%3A%2F%2Fexample.com%2Fdocs%3Fq%3Dzig&amp;tag=zig") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "placeholder=\"Add tag\"") != null);
+}
+
+test "renders tag filter script" {
+    const entries = [_]bookmarks.BookmarkEntry{
+        .{ .url = "https://example.com/docs", .title = "Docs", .created_at = 1, .tags = &.{ "zig", "docs" } },
+        .{ .url = "https://example.com/news", .title = "News", .created_at = 2, .tags = &.{"zig"} },
+    };
+    const html = try render(std.testing.allocator, &entries);
+    defer std.testing.allocator.free(html);
+
+    try std.testing.expect(std.mem.indexOf(u8, html, "id=\"tag-filter\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "const rowTags =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "const matchesTag =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "const updateFilters =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "All Tags") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "button.dataset.tag = tag.toLowerCase()") != null);
 }

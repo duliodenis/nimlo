@@ -55,6 +55,29 @@ pub const TabManager = struct {
         return true;
     }
 
+    pub fn moveTab(self: *TabManager, from_index: usize, to_index: usize) bool {
+        const tab_count = self.tabs.items.len;
+        if (from_index >= tab_count or to_index >= tab_count) return false;
+        if (from_index == to_index) return true;
+
+        const tab = self.tabs.items[from_index];
+        if (from_index < to_index) {
+            std.mem.copyForwards(
+                Tab,
+                self.tabs.items[from_index..to_index],
+                self.tabs.items[from_index + 1 .. to_index + 1],
+            );
+        } else {
+            std.mem.copyBackwards(
+                Tab,
+                self.tabs.items[to_index + 1 .. from_index + 1],
+                self.tabs.items[to_index..from_index],
+            );
+        }
+        self.tabs.items[to_index] = tab;
+        return true;
+    }
+
     pub fn activeTab(self: *TabManager) ?*Tab {
         const id = self.active_tab_id orelse return null;
         const index = self.indexOf(id) orelse return null;
@@ -133,6 +156,70 @@ test "activateTab rejects unknown tab" {
     try std.testing.expectEqual(@as(TabId, 1), manager.active_tab_id.?);
 }
 
+test "moveTab moves tab forward by index" {
+    var manager = TabManager.init(std.testing.allocator);
+    defer manager.deinit();
+
+    const first = try manager.createTab("nimlo://start", false);
+    const second = try manager.createTab("https://example.com", false);
+    const third = try manager.createTab("https://ziglang.org", false);
+
+    try std.testing.expect(manager.moveTab(0, 2));
+    try expectTabOrder(&manager, &.{ second, third, first });
+}
+
+test "moveTab moves tab backward by index" {
+    var manager = TabManager.init(std.testing.allocator);
+    defer manager.deinit();
+
+    const first = try manager.createTab("nimlo://start", false);
+    const second = try manager.createTab("https://example.com", false);
+    const third = try manager.createTab("https://ziglang.org", false);
+
+    try std.testing.expect(manager.moveTab(2, 0));
+    try expectTabOrder(&manager, &.{ third, first, second });
+}
+
+test "moveTab preserves active tab identity" {
+    var manager = TabManager.init(std.testing.allocator);
+    defer manager.deinit();
+
+    const first = try manager.createTab("nimlo://start", false);
+    const second = try manager.createTab("https://example.com", false);
+    const third = try manager.createTab("https://ziglang.org", false);
+
+    try std.testing.expect(manager.activateTab(second));
+    try std.testing.expect(manager.moveTab(1, 0));
+    try expectTabOrder(&manager, &.{ second, first, third });
+    try std.testing.expectEqual(second, manager.active_tab_id.?);
+    try std.testing.expectEqual(second, manager.activeTab().?.id);
+}
+
+test "moveTab treats same index as valid no-op" {
+    var manager = TabManager.init(std.testing.allocator);
+    defer manager.deinit();
+
+    const first = try manager.createTab("nimlo://start", false);
+    const second = try manager.createTab("https://example.com", false);
+
+    try std.testing.expect(manager.moveTab(1, 1));
+    try expectTabOrder(&manager, &.{ first, second });
+    try std.testing.expectEqual(second, manager.active_tab_id.?);
+}
+
+test "moveTab rejects indexes outside tab list" {
+    var manager = TabManager.init(std.testing.allocator);
+    defer manager.deinit();
+
+    const first = try manager.createTab("nimlo://start", false);
+    const second = try manager.createTab("https://example.com", false);
+
+    try std.testing.expect(!manager.moveTab(2, 0));
+    try std.testing.expect(!manager.moveTab(0, 2));
+    try expectTabOrder(&manager, &.{ first, second });
+    try std.testing.expectEqual(second, manager.active_tab_id.?);
+}
+
 test "closeTab removes inactive tab without changing active tab" {
     var manager = TabManager.init(std.testing.allocator);
     defer manager.deinit();
@@ -191,4 +278,11 @@ test "closeTab rejects unknown tab" {
 
     try std.testing.expect(!manager.closeTab(99));
     try std.testing.expectEqual(@as(usize, 1), manager.len());
+}
+
+fn expectTabOrder(manager: *const TabManager, expected_ids: []const TabId) !void {
+    try std.testing.expectEqual(expected_ids.len, manager.tabs.items.len);
+    for (expected_ids, 0..) |expected_id, index| {
+        try std.testing.expectEqual(expected_id, manager.tabs.items[index].id);
+    }
 }

@@ -31,9 +31,20 @@ pub fn render(allocator: std.mem.Allocator, entries: []const bookmarks.BookmarkE
         \\    .filter-chip{min-height:28px;border:1px solid var(--line);border-radius:999px;background:transparent;color:var(--text);padding:4px 10px;font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-weight:600;cursor:pointer}
         \\    .filter-chip:hover{background:color-mix(in srgb,var(--text) 7%,transparent)}
         \\    .filter-chip.active{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 13%,transparent);color:var(--text)}
+        \\    .button-link{display:inline-flex;height:34px;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--text);padding:0 12px;font:inherit;font-weight:600;white-space:nowrap;align-items:center;text-decoration:none;cursor:pointer}
+        \\    .button-link:hover{background:color-mix(in srgb,var(--text) 7%,transparent)}
+        \\    .button-link.danger{border-color:#b42318;color:#b42318}
+        \\    .button-link.danger:hover{background:color-mix(in srgb,#b42318 10%,transparent)}
+        \\    @media (prefers-color-scheme:dark){.button-link.danger{border-color:#f97066;color:#f97066}.button-link.danger:hover{background:color-mix(in srgb,#f97066 14%,transparent)}}
+        \\    .text-button{height:34px;border:0;background:transparent;color:var(--accent);padding:0 4px;font:inherit;font-weight:600;white-space:nowrap;cursor:pointer}
+        \\    .text-button:hover{text-decoration:underline;text-underline-offset:3px}
+        \\    .confirm-text{color:var(--text);font-size:13px;font-weight:600}
+        \\    .selection-bar{display:flex;gap:10px;align-items:center;justify-content:flex-end;margin:-6px 0 14px}
+        \\    .selected-count{color:var(--muted);font-size:13px;margin-right:2px}
         \\    .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
-        \\    .row{display:grid;grid-template-columns:minmax(0,1fr) 170px;gap:14px;padding:14px 16px;border-top:1px solid var(--line);align-items:center}
+        \\    .row{display:grid;grid-template-columns:22px minmax(0,1fr) 170px;gap:14px;padding:14px 16px;border-top:1px solid var(--line);align-items:center}
         \\    .row:first-child{border-top:0}
+        \\    .select{width:16px;height:16px;margin:0;accent-color:var(--accent)}
         \\    .title{display:block;color:var(--text);font-weight:550;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
         \\    a.title:hover{text-decoration:underline;text-underline-offset:3px}
         \\    .url{margin-top:4px;color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -49,7 +60,7 @@ pub fn render(allocator: std.mem.Allocator, entries: []const bookmarks.BookmarkE
         \\    time{color:var(--muted);font-size:12px;text-align:right;white-space:nowrap}
         \\    .empty{padding:44px 16px;text-align:center;color:var(--muted)}
         \\    .hidden{display:none}
-        \\    @media (max-width:640px){main{padding:18px}header{display:block}.search{width:100%;min-width:0;margin-top:14px}.row{grid-template-columns:1fr;gap:6px}time{text-align:left}}
+        \\    @media (max-width:640px){main{padding:18px}header{display:block}.search{width:100%;min-width:0;margin-top:14px}.selection-bar{justify-content:flex-start;flex-wrap:wrap}.row{grid-template-columns:22px 1fr;gap:8px 12px}time{grid-column:2;text-align:left}}
         \\  </style>
         \\</head>
         \\<body>
@@ -66,6 +77,15 @@ pub fn render(allocator: std.mem.Allocator, entries: []const bookmarks.BookmarkE
         \\      <input class="search" id="search" type="search" placeholder="Search bookmarks" autocomplete="off">
         \\    </header>
         \\    <div class="filter-bar hidden" id="tag-filter"></div>
+        \\    <div class="selection-bar hidden" id="selection-bar">
+        \\      <span class="selected-count" id="selected-count">0 selected</span>
+        \\      <button class="text-button" id="select-visible" type="button">Select visible</button>
+        \\      <button class="text-button" id="clear-selection" type="button">Clear selection</button>
+        \\      <button class="button-link danger" id="delete-selected" type="button">Delete</button>
+        \\      <span class="confirm-text hidden" id="confirm-text">Delete selected bookmarks?</span>
+        \\      <a class="button-link danger hidden" id="confirm-delete" href="#">Confirm delete</a>
+        \\      <button class="button-link hidden" id="cancel-delete" type="button">Cancel</button>
+        \\    </div>
         \\    <section class="panel" id="bookmarks">
     );
 
@@ -85,8 +105,19 @@ pub fn render(allocator: std.mem.Allocator, entries: []const bookmarks.BookmarkE
         \\    const rows = [...document.querySelectorAll(".row")];
         \\    const count = document.getElementById("count");
         \\    const tagFilter = document.getElementById("tag-filter");
+        \\    const selectionBar = document.getElementById("selection-bar");
+        \\    const selectedCount = document.getElementById("selected-count");
+        \\    const selectVisible = document.getElementById("select-visible");
+        \\    const clearSelection = document.getElementById("clear-selection");
+        \\    const deleteSelected = document.getElementById("delete-selected");
+        \\    const confirmText = document.getElementById("confirm-text");
+        \\    const confirmDelete = document.getElementById("confirm-delete");
+        \\    const cancelDelete = document.getElementById("cancel-delete");
         \\    let activeTag = "";
+        \\    let confirmingDelete = false;
+        \\    let lastSelectedIndex = null;
         \\    const label = (value) => `${value} ${value === 1 ? "bookmark" : "bookmarks"}`;
+        \\    const selectedLabel = (value) => `${value} selected`;
         \\    const hostFromUrl = (value) => {
         \\      try {
         \\        return new URL(value).hostname.replace(/^www\./, "");
@@ -99,6 +130,42 @@ pub fn render(allocator: std.mem.Allocator, entries: []const bookmarks.BookmarkE
         \\    const rowTags = (row) => (row.dataset.tags || "").split("\n").filter(Boolean);
         \\    const matchesTag = (row) => activeTag === "" || rowTags(row).some((tag) => tag.toLowerCase() === activeTag);
         \\    const filterLabel = (tag, value) => tag === "" ? "All Tags" : `${tag} (${value})`;
+        \\    const selectedUrls = () => rows.filter((row) => row.querySelector(".select").checked).map((row) => row.dataset.url);
+        \\    const visibleRows = () => rows.filter((row) => !row.classList.contains("hidden"));
+        \\    const selectedRows = () => rows.filter((row) => row.querySelector(".select").checked);
+        \\    const deleteHref = (urls) => `https://nimlo.internal/bookmarks/delete?urls=${encodeURIComponent(urls.join("\n"))}`;
+        \\    const updateSelection = () => {
+        \\      const urls = selectedUrls();
+        \\      selectionBar.classList.toggle("hidden", urls.length === 0);
+        \\      selectedCount.textContent = selectedLabel(urls.length);
+        \\      confirmDelete.href = urls.length === 0 ? "#" : deleteHref(urls);
+        \\      confirmingDelete = confirmingDelete && urls.length > 0;
+        \\      selectVisible.classList.toggle("hidden", confirmingDelete);
+        \\      clearSelection.classList.toggle("hidden", confirmingDelete);
+        \\      deleteSelected.classList.toggle("hidden", confirmingDelete);
+        \\      confirmText.classList.toggle("hidden", !confirmingDelete);
+        \\      confirmDelete.classList.toggle("hidden", !confirmingDelete);
+        \\      cancelDelete.classList.toggle("hidden", !confirmingDelete);
+        \\    };
+        \\    const setRowsSelected = (targetRows, selected) => {
+        \\      targetRows.forEach((row) => {
+        \\        row.querySelector(".select").checked = selected;
+        \\      });
+        \\      if (!selected) lastSelectedIndex = null;
+        \\      updateSelection();
+        \\    };
+        \\    const setRangeSelected = (fromIndex, toIndex, selected) => {
+        \\      const start = Math.min(fromIndex, toIndex);
+        \\      const end = Math.max(fromIndex, toIndex);
+        \\      for (let index = start; index <= end; index += 1) {
+        \\        rows[index].querySelector(".select").checked = selected;
+        \\      }
+        \\      updateSelection();
+        \\    };
+        \\    const cancelDeleteConfirmation = () => {
+        \\      confirmingDelete = false;
+        \\      updateSelection();
+        \\    };
         \\    const formatCreatedAt = (value) => {
         \\      if (!Number.isFinite(value) || value < 1000000000000) return null;
         \\      const date = new Date(value);
@@ -109,8 +176,16 @@ pub fn render(allocator: std.mem.Allocator, entries: []const bookmarks.BookmarkE
         \\      const formatted = formatCreatedAt(Number.parseInt(node.dataset.createdAt, 10));
         \\      if (formatted) node.textContent = formatted;
         \\    });
-        \\    rows.forEach((row) => {
+        \\    rows.forEach((row, index) => {
         \\      row.dataset.search = `${row.dataset.search} ${hostFromUrl(row.dataset.url)}`.toLowerCase();
+        \\      row.querySelector(".select").addEventListener("click", (event) => {
+        \\        if (event.shiftKey && lastSelectedIndex !== null) {
+        \\          setRangeSelected(lastSelectedIndex, index, event.currentTarget.checked);
+        \\        } else {
+        \\          updateSelection();
+        \\        }
+        \\        lastSelectedIndex = index;
+        \\      });
         \\    });
         \\    const updateFilters = () => {
         \\      if (rows.length === 0) return;
@@ -156,6 +231,33 @@ pub fn render(allocator: std.mem.Allocator, entries: []const bookmarks.BookmarkE
         \\    };
         \\    updateFilters();
         \\    applyFilters();
+        \\    updateSelection();
+        \\    selectVisible.addEventListener("click", () => setRowsSelected(visibleRows(), true));
+        \\    clearSelection.addEventListener("click", () => setRowsSelected(rows, false));
+        \\    deleteSelected.addEventListener("click", () => {
+        \\      confirmingDelete = selectedUrls().length > 0;
+        \\      updateSelection();
+        \\    });
+        \\    cancelDelete.addEventListener("click", () => {
+        \\      cancelDeleteConfirmation();
+        \\    });
+        \\    document.addEventListener("keydown", (event) => {
+        \\      if (event.key === "Escape") {
+        \\        if (confirmingDelete) {
+        \\          cancelDeleteConfirmation();
+        \\        } else if (selectedRows().length > 0) {
+        \\          setRowsSelected(rows, false);
+        \\        }
+        \\      }
+        \\      if (event.key === "Enter" && confirmingDelete) {
+        \\        event.preventDefault();
+        \\        confirmDelete.click();
+        \\      }
+        \\      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a" && event.target !== search) {
+        \\        event.preventDefault();
+        \\        setRowsSelected(visibleRows(), true);
+        \\      }
+        \\    });
         \\    search.addEventListener("input", applyFilters);
         \\  </script>
         \\</body>
@@ -188,6 +290,8 @@ fn appendEntry(html: *std.ArrayList(u8), allocator: std.mem.Allocator, entry: bo
         if (index > 0) try html.append(allocator, '\n');
         try appendEscapedHtml(html, allocator, tag);
     }
+    try html.appendSlice(allocator, "\"><input class=\"select\" type=\"checkbox\" aria-label=\"Select ");
+    try appendEscapedHtml(html, allocator, titleForEntry(entry));
     try html.appendSlice(allocator, "\"><div>");
 
     if (isLinkableUrl(entry.url)) {
@@ -294,6 +398,21 @@ test "renders empty bookmarks state" {
     try std.testing.expect(std.mem.indexOf(u8, html, "No bookmarks yet") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "0 bookmarks") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "Search bookmarks") != null);
+}
+
+test "renders bookmark selection delete controls" {
+    const entries = [_]bookmarks.BookmarkEntry{
+        .{ .url = "https://example.com/docs?q=zig", .title = "Docs", .created_at = 1, .tags = &.{} },
+    };
+    const html = try render(std.testing.allocator, &entries);
+    defer std.testing.allocator.free(html);
+
+    try std.testing.expect(std.mem.indexOf(u8, html, "class=\"select\" type=\"checkbox\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "id=\"selection-bar\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "Select visible") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "Delete selected bookmarks?") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "https://nimlo.internal/bookmarks/delete?urls=${encodeURIComponent(urls.join(\"\\n\"))}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "setRangeSelected") != null);
 }
 
 test "renders bookmarks newest first and escapes content" {

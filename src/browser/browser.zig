@@ -107,6 +107,7 @@ pub const Browser = struct {
             .on_history_clear_confirmed_requested = handleHistoryClearConfirmedRequested,
             .on_history_urls_delete_requested = handleHistoryUrlsDeleteRequested,
             .on_history_urls_open_requested = handleHistoryUrlsOpenRequested,
+            .on_bookmark_urls_delete_requested = handleBookmarkUrlsDeleteRequested,
             .on_bookmark_tag_add_requested = handleBookmarkTagAddRequested,
             .on_bookmark_tag_remove_requested = handleBookmarkTagRemoveRequested,
             .on_tab_activated_requested = handleTabActivatedRequested,
@@ -255,6 +256,22 @@ pub const Browser = struct {
             if (!history.shouldRecordUrl(url)) continue;
             self.openOrActivateUrl(url) catch continue;
         }
+    }
+
+    fn handleBookmarkUrlsDeleteRequested(context: *anyopaque, source_handle: ?*anyopaque, request_url: []const u8) void {
+        const self: *Browser = @ptrCast(@alignCast(context));
+        var urls = parseHistoryActionUrls(self.allocator, request_url) catch return;
+        defer urls.deinit();
+
+        var changed = false;
+        for (urls.items) |url| {
+            changed = self.bookmarks.removeUrl(url) or changed;
+        }
+        if (!changed) return;
+
+        self.saveBookmarksIfPersistent() catch return;
+        self.reloadBookmarksPageIfActive(source_handle);
+        self.publishTabsChanged();
     }
 
     fn handleBookmarkTagAddRequested(context: *anyopaque, source_handle: ?*anyopaque, request_url: []const u8) void {
@@ -626,6 +643,11 @@ const BookmarkChromeStateRecorder = struct {
     is_bookmarked: bool = false,
 };
 
+const BookmarkUrlStateRecorder = struct {
+    url: []const u8,
+    is_bookmarked: bool = false,
+};
+
 fn recordHistoryEmptyPrompt(context: *anyopaque) void {
     const recorder: *HistoryClearPromptRecorder = @ptrCast(@alignCast(context));
     recorder.empty_count += 1;
@@ -647,6 +669,16 @@ fn recordBookmarkChromeState(context: *anyopaque, tabs: []const webview_events.T
         return;
     }
     recorder.can_bookmark = false;
+    recorder.is_bookmarked = false;
+}
+
+fn recordBookmarkUrlState(context: *anyopaque, tabs: []const webview_events.TabSnapshot) void {
+    const recorder: *BookmarkUrlStateRecorder = @ptrCast(@alignCast(context));
+    for (tabs) |tab| {
+        if (!std.mem.eql(u8, tab.url, recorder.url)) continue;
+        recorder.is_bookmarked = tab.is_bookmarked;
+        return;
+    }
     recorder.is_bookmarked = false;
 }
 
@@ -1014,6 +1046,55 @@ test "bookmark tag action urls update memory and persistence" {
     defer loaded_after_remove.deinit();
     try loaded_after_remove.loadFromFile(tmp_dir.dir, std.testing.io, "bookmarks.jsonl");
     try std.testing.expectEqual(@as(usize, 0), loaded_after_remove.entries()[0].tags.len);
+}
+
+test "bookmark delete action urls remove from memory persistence and chrome state" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var seeded = bookmarks.BookmarkStore.init(std.testing.allocator);
+    defer seeded.deinit();
+    try seeded.addOrUpdate("https://example.com/docs", "Docs", 51);
+    try seeded.addOrUpdate("https://example.com/keep", "Keep", 52);
+    try seeded.saveToFile(tmp_dir.dir, std.testing.io, "bookmarks.jsonl");
+
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    var recorder = BookmarkUrlStateRecorder{ .url = "https://example.com/docs" };
+    webview_events.setChromeSink(.{
+        .context = &recorder,
+        .on_tabs_changed = recordBookmarkUrlState,
+    });
+
+    try browser.enableBookmarkPersistenceInDir(tmp_dir.dir, "bookmarks.jsonl");
+    try browser.start();
+    webview_events.emitNavigation(.{
+        .url = "https://example.com/docs",
+        .title = "Docs",
+        .loading_state = .idle,
+    });
+    try std.testing.expect(recorder.is_bookmarked);
+    webview_events.emitUrlOpenRequested("nimlo://bookmarks");
+    try std.testing.expectEqualStrings("nimlo://bookmarks", browser.tabs.activeTab().?.current_url);
+
+    webview_events.emitBookmarkUrlsDeleteRequested(null, "https://nimlo.internal/bookmarks/delete?urls=https%3A%2F%2Fexample.com%2Fdocs");
+
+    try std.testing.expectEqual(@as(usize, 1), browser.bookmarks.entries().len);
+    try std.testing.expectEqualStrings("https://example.com/keep", browser.bookmarks.entries()[0].url);
+    try std.testing.expect(!recorder.is_bookmarked);
+
+    var loaded = bookmarks.BookmarkStore.init(std.testing.allocator);
+    defer loaded.deinit();
+    try loaded.loadFromFile(tmp_dir.dir, std.testing.io, "bookmarks.jsonl");
+
+    try std.testing.expectEqual(@as(usize, 1), loaded.entries().len);
+    try std.testing.expectEqualStrings("https://example.com/keep", loaded.entries()[0].url);
 }
 
 test "bookmark current page ignores internal and private tabs" {

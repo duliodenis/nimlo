@@ -1,14 +1,25 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    const macos_15_apple_silicon = std.Build.parseTargetQuery(.{
+        .arch_os_abi = "aarch64-macos.15.0",
+    }) catch unreachable;
+    const target = b.standardTargetOptions(.{
+        .default_target = macos_15_apple_silicon,
+    });
     const optimize = b.standardOptimizeOption(.{});
+
+    if (target.result.os.tag == .macos and b.sysroot == null) {
+        const sdk_path_output = b.run(&.{ "xcrun", "--sdk", "macosx", "--show-sdk-path" });
+        b.sysroot = b.dupe(std.mem.trim(u8, sdk_path_output, " \t\r\n"));
+    }
 
     const root_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
+    addMacosSdkPaths(b, root_module, target);
     root_module.addAnonymousImport("start_page_asset", .{
         .root_source_file = b.path("assets/start_page/start_page.zig"),
         .target = target,
@@ -167,6 +178,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    addMacosSdkPaths(b, browser_tests.root_module, target);
     browser_tests.root_module.addAnonymousImport("start_page_asset", .{
         .root_source_file = b.path("assets/start_page/start_page.zig"),
         .target = target,
@@ -194,4 +206,11 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_history_tests.step);
     test_step.dependOn(&run_history_page_tests.step);
     test_step.dependOn(&run_browser_tests.step);
+}
+
+fn addMacosSdkPaths(b: *std.Build, module: *std.Build.Module, target: std.Build.ResolvedTarget) void {
+    if (target.result.os.tag != .macos) return;
+    const sysroot = b.sysroot orelse return;
+    module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+    module.addSystemFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sysroot, "System/Library/Frameworks" }) });
 }

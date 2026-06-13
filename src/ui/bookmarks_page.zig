@@ -21,16 +21,23 @@ pub fn render(allocator: std.mem.Allocator, entries: []const bookmarks.BookmarkE
         \\    @media (prefers-color-scheme:dark){:root{--bg:#171819;--panel:#222427;--text:#f3f4f6;--muted:#a8b0bd;--line:#373a42;--accent:#50d3bd;--field:#1b1d20}}
         \\    *{box-sizing:border-box}
         \\    body{margin:0;background:var(--bg);color:var(--text);font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-        \\    main{max-width:920px;margin:0 auto;padding:28px}
+        \\    main{max-width:1180px;margin:0 auto;padding:28px}
         \\    header{display:flex;gap:18px;align-items:center;justify-content:space-between;margin-bottom:18px}
         \\    h1{font-size:22px;line-height:1.2;margin:0;font-weight:650;letter-spacing:0}
         \\    .count{color:var(--muted);font-size:13px;margin-top:4px}
         \\    .search{width:min(360px,44vw);height:34px;border:1px solid var(--line);border-radius:6px;background:var(--field);color:var(--text);padding:0 11px;font:inherit}
         \\    .search:focus{outline:2px solid color-mix(in srgb,var(--accent) 28%,transparent);border-color:var(--accent)}
-        \\    .filter-bar{display:flex;flex-wrap:wrap;gap:8px;margin:-6px 0 14px}
-        \\    .filter-chip{min-height:28px;border:1px solid var(--line);border-radius:999px;background:transparent;color:var(--text);padding:4px 10px;font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-weight:600;cursor:pointer}
+        \\    .bookmarks-layout{display:grid;grid-template-columns:210px minmax(0,1fr);gap:22px;align-items:start}
+        \\    .tag-sidebar{position:sticky;top:18px;min-width:0}
+        \\    .tag-sidebar.hidden + .content{grid-column:1/-1}
+        \\    .sidebar-title{color:var(--muted);font-size:12px;font-weight:650;margin:2px 0 8px;text-transform:uppercase;letter-spacing:0}
+        \\    .tag-list{display:flex;flex-direction:column;gap:2px}
+        \\    .filter-chip{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:8px;align-items:center;min-height:30px;border:0;border-radius:6px;background:transparent;color:var(--text);padding:4px 8px;font:13px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-weight:600;cursor:pointer;text-align:left}
         \\    .filter-chip:hover{background:color-mix(in srgb,var(--text) 7%,transparent)}
-        \\    .filter-chip.active{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 13%,transparent);color:var(--text)}
+        \\    .filter-chip.active{background:color-mix(in srgb,var(--accent) 13%,transparent);color:var(--text)}
+        \\    .filter-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        \\    .filter-count{color:var(--muted);font-weight:500}
+        \\    .tag-prefix{color:var(--muted);font-weight:650}
         \\    .button-link{display:inline-flex;height:34px;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--text);padding:0 12px;font:inherit;font-weight:600;white-space:nowrap;align-items:center;text-decoration:none;cursor:pointer}
         \\    .button-link:hover{background:color-mix(in srgb,var(--text) 7%,transparent)}
         \\    .button-link.danger{border-color:#b42318;color:#b42318}
@@ -39,7 +46,8 @@ pub fn render(allocator: std.mem.Allocator, entries: []const bookmarks.BookmarkE
         \\    .text-button{height:34px;border:0;background:transparent;color:var(--accent);padding:0 4px;font:inherit;font-weight:600;white-space:nowrap;cursor:pointer}
         \\    .text-button:hover{text-decoration:underline;text-underline-offset:3px}
         \\    .confirm-text{color:var(--text);font-size:13px;font-weight:600}
-        \\    .selection-bar{display:flex;gap:10px;align-items:center;justify-content:flex-end;margin:-6px 0 14px}
+        \\    .content{min-width:0}
+        \\    .selection-bar{display:flex;gap:10px;align-items:center;justify-content:flex-end;margin:0 0 14px}
         \\    .selected-count{color:var(--muted);font-size:13px;margin-right:2px}
         \\    .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
         \\    .row{display:grid;grid-template-columns:22px minmax(0,1fr) 170px;gap:14px;padding:14px 16px;border-top:1px solid var(--line);align-items:center}
@@ -60,7 +68,7 @@ pub fn render(allocator: std.mem.Allocator, entries: []const bookmarks.BookmarkE
         \\    time{color:var(--muted);font-size:12px;text-align:right;white-space:nowrap}
         \\    .empty{padding:44px 16px;text-align:center;color:var(--muted)}
         \\    .hidden{display:none}
-        \\    @media (max-width:640px){main{padding:18px}header{display:block}.search{width:100%;min-width:0;margin-top:14px}.selection-bar{justify-content:flex-start;flex-wrap:wrap}.row{grid-template-columns:22px 1fr;gap:8px 12px}time{grid-column:2;text-align:left}}
+        \\    @media (max-width:760px){main{padding:18px}header{display:block}.search{width:100%;min-width:0;margin-top:14px}.bookmarks-layout{grid-template-columns:1fr;gap:14px}.tag-sidebar{position:static}.tag-list{max-height:148px;overflow:auto}.selection-bar{justify-content:flex-start;flex-wrap:wrap}.row{grid-template-columns:22px 1fr;gap:8px 12px}time{grid-column:2;text-align:left}}
         \\  </style>
         \\</head>
         \\<body>
@@ -74,9 +82,14 @@ pub fn render(allocator: std.mem.Allocator, entries: []const bookmarks.BookmarkE
     try html.appendSlice(allocator,
         \\</div>
         \\      </div>
-        \\      <input class="search" id="search" type="search" placeholder="Search bookmarks" autocomplete="off">
+        \\      <input class="search" id="search" type="search" placeholder="Search bookmarks and tags" autocomplete="off">
         \\    </header>
-        \\    <div class="filter-bar hidden" id="tag-filter"></div>
+        \\    <div class="bookmarks-layout">
+        \\      <aside class="tag-sidebar hidden" id="tag-sidebar" aria-label="Bookmark tags">
+        \\        <div class="sidebar-title">Tags</div>
+        \\        <div class="tag-list" id="tag-filter"></div>
+        \\      </aside>
+        \\      <div class="content">
         \\    <div class="selection-bar hidden" id="selection-bar">
         \\      <span class="selected-count" id="selected-count">0 selected</span>
         \\      <button class="text-button" id="select-visible" type="button">Select visible</button>
@@ -99,11 +112,14 @@ pub fn render(allocator: std.mem.Allocator, entries: []const bookmarks.BookmarkE
 
     try html.appendSlice(allocator,
         \\    </section>
+        \\      </div>
+        \\    </div>
         \\  </main>
         \\  <script>
         \\    const search = document.getElementById("search");
         \\    const rows = [...document.querySelectorAll(".row")];
         \\    const count = document.getElementById("count");
+        \\    const tagSidebar = document.getElementById("tag-sidebar");
         \\    const tagFilter = document.getElementById("tag-filter");
         \\    const selectionBar = document.getElementById("selection-bar");
         \\    const selectedCount = document.getElementById("selected-count");
@@ -128,8 +144,13 @@ pub fn render(allocator: std.mem.Allocator, entries: []const bookmarks.BookmarkE
         \\    const searchTokens = (value) => value.trim().toLowerCase().split(/\s+/).filter(Boolean);
         \\    const matchesSearch = (row, tokens) => tokens.length === 0 || tokens.every((token) => row.dataset.search.includes(token));
         \\    const rowTags = (row) => (row.dataset.tags || "").split("\n").filter(Boolean);
-        \\    const matchesTag = (row) => activeTag === "" || rowTags(row).some((tag) => tag.toLowerCase() === activeTag);
-        \\    const filterLabel = (tag, value) => tag === "" ? "All Tags" : `${tag} (${value})`;
+        \\    const matchesTag = (row) => {
+        \\      const tags = rowTags(row);
+        \\      if (activeTag === "") return true;
+        \\      if (activeTag === "__tagged") return tags.length > 0;
+        \\      if (activeTag === "__untagged") return tags.length === 0;
+        \\      return tags.some((tag) => tag.toLowerCase() === activeTag);
+        \\    };
         \\    const selectedUrls = () => rows.filter((row) => row.querySelector(".select").checked).map((row) => row.dataset.url);
         \\    const visibleRows = () => rows.filter((row) => !row.classList.contains("hidden"));
         \\    const selectedRows = () => rows.filter((row) => row.querySelector(".select").checked);
@@ -190,20 +211,42 @@ pub fn render(allocator: std.mem.Allocator, entries: []const bookmarks.BookmarkE
         \\    const updateFilters = () => {
         \\      if (rows.length === 0) return;
         \\      const counts = new Map();
+        \\      let taggedCount = 0;
+        \\      let untaggedCount = 0;
         \\      for (const row of rows) {
-        \\        for (const tag of rowTags(row)) counts.set(tag, (counts.get(tag) || 0) + 1);
+        \\        const tags = rowTags(row);
+        \\        if (tags.length === 0) {
+        \\          untaggedCount += 1;
+        \\          continue;
+        \\        }
+        \\        taggedCount += 1;
+        \\        for (const tag of tags) counts.set(tag, (counts.get(tag) || 0) + 1);
         \\      }
         \\      if (counts.size === 0) return;
-        \\      tagFilter.classList.remove("hidden");
+        \\      tagSidebar.classList.remove("hidden");
         \\      tagFilter.textContent = "";
         \\      const tags = [...counts.keys()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
-        \\      const options = [["", rows.length], ...tags.map((tag) => [tag, counts.get(tag)])];
-        \\      for (const [tag, tagCount] of options) {
+        \\      const options = [
+        \\        { key: "", label: "All Bookmarks", count: rows.length, prefix: "" },
+        \\        { key: "__tagged", label: "All Tagged", count: taggedCount, prefix: "" },
+        \\        ...(untaggedCount > 0 ? [{ key: "__untagged", label: "All Untagged", count: untaggedCount, prefix: "" }] : []),
+        \\        ...tags.map((tag) => ({ key: tag.toLowerCase(), label: tag, count: counts.get(tag), prefix: "#" })),
+        \\      ];
+        \\      for (const option of options) {
         \\        const button = document.createElement("button");
         \\        button.className = "filter-chip";
         \\        button.type = "button";
-        \\        button.dataset.tag = tag.toLowerCase();
-        \\        button.textContent = filterLabel(tag, tagCount);
+        \\        button.dataset.tag = option.key;
+        \\        const prefix = document.createElement("span");
+        \\        prefix.className = "tag-prefix";
+        \\        prefix.textContent = option.prefix;
+        \\        const name = document.createElement("span");
+        \\        name.className = "filter-name";
+        \\        name.textContent = option.label;
+        \\        const count = document.createElement("span");
+        \\        count.className = "filter-count";
+        \\        count.textContent = option.count;
+        \\        button.append(prefix, name, count);
         \\        button.addEventListener("click", () => {
         \\          activeTag = button.dataset.tag;
         \\          applyFilters();
@@ -324,7 +367,7 @@ fn appendEntry(html: *std.ArrayList(u8), allocator: std.mem.Allocator, entry: bo
 fn appendTags(html: *std.ArrayList(u8), allocator: std.mem.Allocator, entry: bookmarks.BookmarkEntry) !void {
     try html.appendSlice(allocator, "<div class=\"tags\">");
     for (entry.tags) |tag| {
-        try html.appendSlice(allocator, "<span class=\"tag\"><span>");
+        try html.appendSlice(allocator, "<span class=\"tag\"><span class=\"tag-prefix\">#</span><span>");
         try appendEscapedHtml(html, allocator, tag);
         try html.appendSlice(allocator, "</span><a class=\"tag-remove\" title=\"Remove tag\" href=\"https://nimlo.internal/bookmarks/tag/remove?url=");
         try appendPercentEncoded(html, allocator, entry.url);
@@ -397,7 +440,8 @@ test "renders empty bookmarks state" {
 
     try std.testing.expect(std.mem.indexOf(u8, html, "No bookmarks yet") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "0 bookmarks") != null);
-    try std.testing.expect(std.mem.indexOf(u8, html, "Search bookmarks") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "Search bookmarks and tags") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, ".tag-sidebar.hidden + .content{grid-column:1/-1}") != null);
 }
 
 test "renders bookmark selection delete controls" {
@@ -451,6 +495,7 @@ test "renders tag chips and edit actions" {
     defer std.testing.allocator.free(html);
 
     try std.testing.expect(std.mem.indexOf(u8, html, "class=\"tag\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "class=\"tag-prefix\">#</span><span>zig") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "https://nimlo.internal/bookmarks/tag/add") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "https://nimlo.internal/bookmarks/tag/remove?url=https%3A%2F%2Fexample.com%2Fdocs%3Fq%3Dzig&amp;tag=zig") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "placeholder=\"Add tag\"") != null);
@@ -464,10 +509,17 @@ test "renders tag filter script" {
     const html = try render(std.testing.allocator, &entries);
     defer std.testing.allocator.free(html);
 
+    try std.testing.expect(std.mem.indexOf(u8, html, "id=\"tag-sidebar\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "id=\"tag-filter\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "class=\"sidebar-title\">Tags") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "const rowTags =") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "const matchesTag =") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "const updateFilters =") != null);
-    try std.testing.expect(std.mem.indexOf(u8, html, "All Tags") != null);
-    try std.testing.expect(std.mem.indexOf(u8, html, "button.dataset.tag = tag.toLowerCase()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "All Bookmarks") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "All Tagged") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "All Untagged") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "key: \"__tagged\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "key: \"__untagged\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "taggedCount += 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "activeTag = button.dataset.tag") != null);
 }

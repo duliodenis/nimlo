@@ -15,6 +15,8 @@ pub const html =
     \\    h2{font-size:13px;margin:0;color:var(--text)}
     \\    p{margin:0;color:var(--muted);line-height:1.45}
     \\    a{color:var(--accent);text-underline-offset:2px}
+    \\    .button{display:inline-flex;align-items:center;justify-content:center;min-height:34px;margin-top:12px;padding:0 12px;border:1px solid var(--accent);border-radius:7px;background:var(--accent);color:#fff;text-decoration:none;font-weight:650}
+    \\    .button[hidden]{display:none}
     \\    .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:20px}
     \\    .hero{display:flex;gap:14px;align-items:center;padding:18px 20px;border-bottom:1px solid var(--line)}
     \\    .mark{width:34px;height:34px;border-radius:8px;background:linear-gradient(135deg,#4b6cff,#6c3df4);display:grid;place-items:center;color:#fff;font-size:25px;font-weight:800;line-height:1}
@@ -51,6 +53,7 @@ pub const html =
     \\        <div>
     \\          <h2 id="update-title">Checking for updates...</h2>
     \\          <p id="update-detail">Comparing this local build with the latest published Nimlo version.</p>
+    \\          <a id="update-download" class="button" href="#" hidden>Download update</a>
     \\        </div>
     \\      </div>
     \\    </section>
@@ -96,6 +99,7 @@ pub const html =
     \\    const latestVersionUrl = "https://nimlo.org/version.latest";
     \\    const updateTitle = document.getElementById("update-title");
     \\    const updateDetail = document.getElementById("update-detail");
+    \\    const updateDownload = document.getElementById("update-download");
     \\    const latestVersionNode = document.getElementById("latest-version");
     \\
     \\    const parseVersion = (version) => {
@@ -123,25 +127,35 @@ pub const html =
     \\        return response.text();
     \\      })
     \\      .then((text) => {
-    \\        const latestVersion = text.trim().split(/\s+/)[0] || "";
+    \\        const lines = text.trim().split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    \\        const latestVersion = lines[0] || "";
+    \\        const downloadUrl = lines[1] || "";
     \\        const comparison = compareVersions(currentVersion, latestVersion);
     \\        if (comparison === null) throw new Error("Invalid latest version");
     \\        latestVersionNode.textContent = latestVersion;
     \\        if (comparison < 0) {
     \\          updateTitle.textContent = "A newer version of Nimlo is available.";
     \\          updateDetail.textContent = `This build is ${currentVersion}. The latest published version is ${latestVersion}.`;
+    \\          if (downloadUrl) {
+    \\            updateDownload.href = downloadUrl;
+    \\            updateDownload.textContent = `Download Nimlo ${latestVersion}`;
+    \\            updateDownload.hidden = false;
+    \\          }
     \\        } else if (comparison > 0) {
     \\          updateTitle.textContent = "This local build is ahead of the latest published version.";
     \\          updateDetail.textContent = `This build is ${currentVersion}. The latest published version is ${latestVersion}.`;
+    \\          updateDownload.hidden = true;
     \\        } else {
     \\          updateTitle.textContent = "Nimlo is up to date for this local build.";
     \\          updateDetail.textContent = `This build matches the latest published version: ${latestVersion}.`;
+    \\          updateDownload.hidden = true;
     \\        }
     \\      })
     \\      .catch(() => {
     \\        latestVersionNode.textContent = "Unavailable";
     \\        updateTitle.textContent = "Could not check for updates.";
     \\        updateDetail.textContent = "Nimlo could not reach the published version file for this check.";
+    \\        updateDownload.hidden = true;
     \\      });
     \\  </script>
     \\</body>

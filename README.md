@@ -34,6 +34,8 @@ Current prototype capabilities:
 - Process-local WebCrypto master key for nonpersistent browsing sessions
 - Local JSONL history persistence
 - `nimlo://history` page with day grouping, search, multi-select, selected open/delete, delete confirmation, and keyboard/range selection controls
+- Local JSONL bookmark persistence with toolbar star toggling and `nimlo://bookmarks` management
+- `nimlo://bookmarks` page with search, tag editing, tag sidebar filters, untagged filtering, multi-select deletion, delete confirmation, and keyboard/range selection controls
 - No telemetry or account features
 
 ## Philosophy
@@ -159,9 +161,18 @@ Nimlo
 - [x] Select a full day group
 - [x] Confirm bulk delete before removal
 - [x] Keyboard and range-selection shortcuts
-- [ ] Save bookmarks
-- [ ] View bookmarks
-- [ ] Remove bookmarks
+- [x] Save bookmarks
+- [x] Toggle bookmarks from the toolbar star
+- [x] View bookmarks
+- [x] Search bookmarks by title, URL, hostname, and tag
+- [x] Add and remove bookmark tags
+- [x] Filter bookmarks by tag
+- [x] Filter tagged and untagged bookmarks
+- [x] Multi-select bookmark rows
+- [x] Delete selected bookmarks
+- [x] Select visible bookmark results
+- [x] Confirm bulk bookmark delete before removal
+- [x] Keyboard and range-selection shortcuts
 
 ### 0.6 — Window and Tab Management
 
@@ -298,7 +309,6 @@ Good first areas will likely include:
 
 - URL parsing tests
 - Search engine routing
-- Bookmark storage
 - History storage
 - Start page design
 - Documentation

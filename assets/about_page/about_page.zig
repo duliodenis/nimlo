@@ -43,7 +43,7 @@ pub const html =
     \\        <div class="mark" aria-hidden="true">N</div>
     \\        <div>
     \\          <div class="name">Nimlo</div>
-    \\          <p>Version 0.1.0 (Prototype Build)</p>
+    \\          <p>Version 0.5</p>
     \\        </div>
     \\      </div>
     \\      <div class="status">
@@ -61,7 +61,7 @@ pub const html =
     \\      <div class="grid">
     \\        <div>Internal URL</div><div>nimlo://about</div>
     \\        <div>Rendering Engine</div><div id="engine">WebKit WKWebView</div>
-    \\        <div>Platform</div><div id="platform">macOS</div>
+    \\        <div>Platform</div><div id="platform">macOS Apple Silicon</div>
     \\        <div>Language</div><div id="language">Unknown</div>
     \\        <div>Viewport</div><div id="viewport">Unknown</div>
     \\        <div>Latest Version</div><div id="latest-version">Checking...</div>
@@ -86,14 +86,13 @@ pub const html =
     \\    const ua = navigator.userAgent || "";
     \\    const match = ua.match(/AppleWebKit\/([^\s]+)/);
     \\    document.getElementById("engine").textContent = match ? `WebKit ${match[1]} via WKWebView` : "WebKit WKWebView";
-    \\    document.getElementById("platform").textContent = navigator.platform || "macOS";
     \\    document.getElementById("language").textContent = navigator.language || "Unknown";
     \\    const viewport = () => `${window.innerWidth} x ${window.innerHeight}`;
     \\    const viewportNode = document.getElementById("viewport");
     \\    viewportNode.textContent = viewport();
     \\    window.addEventListener("resize", () => { viewportNode.textContent = viewport(); });
     \\
-    \\    const currentVersion = "0.1.0";
+    \\    const currentVersion = "0.5";
     \\    const latestVersionUrl = "https://nimlo.org/version.latest";
     \\    const updateTitle = document.getElementById("update-title");
     \\    const updateDetail = document.getElementById("update-detail");
@@ -130,6 +129,9 @@ pub const html =
     \\        latestVersionNode.textContent = latestVersion;
     \\        if (comparison < 0) {
     \\          updateTitle.textContent = "A newer version of Nimlo is available.";
+    \\          updateDetail.textContent = `This build is ${currentVersion}. The latest published version is ${latestVersion}.`;
+    \\        } else if (comparison > 0) {
+    \\          updateTitle.textContent = "This local build is ahead of the latest published version.";
     \\          updateDetail.textContent = `This build is ${currentVersion}. The latest published version is ${latestVersion}.`;
     \\        } else {
     \\          updateTitle.textContent = "Nimlo is up to date for this local build.";

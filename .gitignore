@@ -1,6 +1,7 @@
 .zig-cache/
 zig-out/
 *.o
+*.dmg
 
 # macOS
 .DS_Store

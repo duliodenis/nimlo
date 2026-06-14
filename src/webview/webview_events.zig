@@ -40,6 +40,7 @@ pub const EventSink = struct {
     on_bookmark_tag_remove_requested: ?*const fn (context: *anyopaque, source_handle: ?*anyopaque, request_url: []const u8) void = null,
     on_tab_activated_requested: ?*const fn (context: *anyopaque, tab_id: u64) void = null,
     on_tab_closed_requested: ?*const fn (context: *anyopaque, tab_id: u64) void = null,
+    on_tab_reordered_requested: ?*const fn (context: *anyopaque, from_index: usize, to_index: usize) void = null,
 };
 
 pub const ChromeSink = struct {
@@ -87,6 +88,14 @@ pub fn emitTabClosedRequested(tab_id: u64) void {
     if (current_sink) |sink| {
         if (sink.on_tab_closed_requested) |callback| {
             callback(sink.context, tab_id);
+        }
+    }
+}
+
+pub fn emitTabReorderedRequested(from_index: usize, to_index: usize) void {
+    if (current_sink) |sink| {
+        if (sink.on_tab_reordered_requested) |callback| {
+            callback(sink.context, from_index, to_index);
         }
     }
 }

@@ -122,6 +122,10 @@ var current_tab_target: Id = null;
 var current_webview_target: Id = null;
 var current_window: Id = null;
 var current_tab_snapshots: std.ArrayList(webview_events.TabSnapshot) = .empty;
+var current_drag_tab_id: ?u64 = null;
+var current_drag_last_index: ?usize = null;
+var current_drag_start_point: CGPoint = .{ .x = 0, .y = 0 };
+var current_drag_has_moved = false;
 var webview_chrome_states: std.ArrayList(WebViewChromeState) = .empty;
 var favicon_cache: std.ArrayList(CachedFavicon) = .empty;
 var rendered_tab_controls: std.ArrayList(RenderedTabControl) = .empty;
@@ -491,7 +495,7 @@ fn removeStaleRenderedTabs() void {
 fn addTitlebarTabButton(container: Id, target: Id, tab: webview_events.TabSnapshot) !Id {
     const button = msg1(
         Id,
-        msg0(Id, cls("NSButton"), sel("alloc")),
+        msg0(Id, cls("NimloTabButton"), sel("alloc")),
         sel("initWithFrame:"),
         CGRect{
             .origin = .{ .x = 0, .y = (tab_strip_height - tab_height) / 2 },
@@ -967,6 +971,8 @@ fn toolbarControlY(bounds: CGRect, height: CGFloat) CGFloat {
 }
 
 fn installAddressBarTargetClass() void {
+    installTitlebarTabButtonClass();
+
     if (c.objc_getClass("NimloAddressBarTarget") != null) return;
 
     const superclass = c.objc_getClass("NSObject");
@@ -1127,6 +1133,120 @@ fn installAddressBarTargetClass() void {
     );
 
     c.objc_registerClassPair(target_class);
+}
+
+fn installTitlebarTabButtonClass() void {
+    if (c.objc_getClass("NimloTabButton") != null) return;
+
+    const superclass = c.objc_getClass("NSButton");
+    const button_class = c.objc_allocateClassPair(superclass, "NimloTabButton", 0);
+    if (button_class == null) return;
+
+    _ = c.class_addMethod(
+        button_class,
+        c.sel_registerName("mouseDown:"),
+        @ptrCast(&tabButtonMouseDown),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        button_class,
+        c.sel_registerName("mouseDragged:"),
+        @ptrCast(&tabButtonMouseDragged),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        button_class,
+        c.sel_registerName("mouseUp:"),
+        @ptrCast(&tabButtonMouseUp),
+        "v@:@",
+    );
+
+    c.objc_registerClassPair(button_class);
+}
+
+fn tabButtonMouseDown(button: Id, _: Sel, event: Id) callconv(.c) void {
+    const tab_id = tabIdFromSender(button) orelse return;
+    const index = tabSnapshotIndex(tab_id) orelse return;
+    const point = eventLocationInTabDocument(event) orelse return;
+
+    current_drag_tab_id = tab_id;
+    current_drag_last_index = index;
+    current_drag_start_point = point;
+    current_drag_has_moved = false;
+}
+
+fn tabButtonMouseDragged(_: Id, _: Sel, event: Id) callconv(.c) void {
+    if (current_drag_tab_id == null) return;
+    const from_index = current_drag_last_index orelse return;
+    const point = eventLocationInTabDocument(event) orelse return;
+    const dx = absFloat(point.x - current_drag_start_point.x);
+    if (dx < 6) return;
+
+    current_drag_has_moved = true;
+    const to_index = tabIndexAtDocumentX(point.x) orelse return;
+    if (from_index == to_index) return;
+
+    webview_events.emitTabReorderedRequested(from_index, to_index);
+    current_drag_last_index = to_index;
+}
+
+fn tabButtonMouseUp(button: Id, _: Sel, _: Id) callconv(.c) void {
+    const tab_id = current_drag_tab_id orelse tabIdFromSender(button) orelse return;
+    const should_activate = !current_drag_has_moved;
+
+    resetCurrentTabDrag();
+    if (should_activate) {
+        webview_events.emitTabActivatedRequested(tab_id);
+    }
+}
+
+fn resetCurrentTabDrag() void {
+    current_drag_tab_id = null;
+    current_drag_last_index = null;
+    current_drag_start_point = .{ .x = 0, .y = 0 };
+    current_drag_has_moved = false;
+}
+
+fn tabIdFromSender(sender: Id) ?u64 {
+    const tab_id = msg0(isize, sender, sel("tag"));
+    if (tab_id <= 0) return null;
+    return @intCast(tab_id);
+}
+
+fn tabSnapshotIndex(tab_id: u64) ?usize {
+    for (current_tab_snapshots.items, 0..) |tab, index| {
+        if (tab.id == tab_id) return index;
+    }
+    return null;
+}
+
+fn eventLocationInTabDocument(event: Id) ?CGPoint {
+    const document_view = current_tab_document_view orelse return null;
+    const window_point = msg0(CGPoint, event, sel("locationInWindow"));
+    return msg2(
+        CGPoint,
+        document_view,
+        sel("convertPoint:fromView:"),
+        window_point,
+        @as(Id, null),
+    );
+}
+
+fn tabIndexAtDocumentX(x: CGFloat) ?usize {
+    const container = current_tab_container orelse return null;
+    const tab_count = current_tab_snapshots.items.len;
+    if (tab_count == 0) return null;
+
+    const slot_width = tabWidthForCount(tab_count, titlebarTabAreaWidth(container));
+    const stride = slot_width + titlebar_new_tab_button_gap;
+    const clamped_x = @max(@as(CGFloat, 0), x);
+    var index: usize = @intFromFloat(@floor(clamped_x / stride));
+    if (index >= tab_count) index = tab_count - 1;
+    return index;
+}
+
+fn absFloat(value: CGFloat) CGFloat {
+    return if (value < 0) -value else value;
 }
 
 fn webCryptoMasterKey(_: Id, _: Sel, _: Id) callconv(.c) Id {

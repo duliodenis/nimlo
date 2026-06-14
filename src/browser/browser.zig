@@ -112,6 +112,7 @@ pub const Browser = struct {
             .on_bookmark_tag_remove_requested = handleBookmarkTagRemoveRequested,
             .on_tab_activated_requested = handleTabActivatedRequested,
             .on_tab_closed_requested = handleTabClosedRequested,
+            .on_tab_reordered_requested = handleTabReorderedRequested,
         });
         self.publishTabsChanged();
     }
@@ -408,6 +409,13 @@ pub const Browser = struct {
             self.webview_adapter.showWebView(handle);
             self.loadTab(active_tab.*) catch return;
         }
+
+        self.publishTabsChanged();
+    }
+
+    fn handleTabReorderedRequested(context: *anyopaque, from_index: usize, to_index: usize) void {
+        const self: *Browser = @ptrCast(@alignCast(context));
+        if (!self.tabs.moveTab(from_index, to_index)) return;
 
         self.publishTabsChanged();
     }
@@ -1469,6 +1477,29 @@ test "tab activation command switches active tab" {
     webview_events.emitTabActivatedRequested(first);
 
     try std.testing.expectEqual(first, browser.tabs.active_tab_id.?);
+}
+
+test "tab reorder command moves tab and preserves active tab" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.start();
+    const first = browser.tabs.active_tab_id.?;
+    const second = try browser.tabs.createTab("https://example.com", false);
+    const third = try browser.tabs.createTab("https://ziglang.org", false);
+
+    try std.testing.expect(browser.tabs.activateTab(second));
+    webview_events.emitTabReorderedRequested(1, 0);
+
+    try std.testing.expectEqual(second, browser.tabs.tabs.items[0].id);
+    try std.testing.expectEqual(first, browser.tabs.tabs.items[1].id);
+    try std.testing.expectEqual(third, browser.tabs.tabs.items[2].id);
+    try std.testing.expectEqual(second, browser.tabs.active_tab_id.?);
 }
 
 test "navigation event updates tab matching source WebView handle" {

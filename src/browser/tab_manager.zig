@@ -33,8 +33,13 @@ pub const TabManager = struct {
     }
 
     pub fn closeTab(self: *TabManager, id: TabId) bool {
-        const index = self.indexOf(id) orelse return false;
-        _ = self.tabs.orderedRemove(index);
+        _ = self.detachTab(id) orelse return false;
+        return true;
+    }
+
+    pub fn detachTab(self: *TabManager, id: TabId) ?Tab {
+        const index = self.indexOf(id) orelse return null;
+        const detached = self.tabs.orderedRemove(index);
 
         if (self.active_tab_id == id) {
             self.active_tab_id = if (self.tabs.items.len == 0)
@@ -45,7 +50,7 @@ pub const TabManager = struct {
                 self.tabs.items[self.tabs.items.len - 1].id;
         }
 
-        return true;
+        return detached;
     }
 
     pub fn activateTab(self: *TabManager, id: TabId) bool {
@@ -218,6 +223,82 @@ test "moveTab rejects indexes outside tab list" {
     try std.testing.expect(!manager.moveTab(0, 2));
     try expectTabOrder(&manager, &.{ first, second });
     try std.testing.expectEqual(second, manager.active_tab_id.?);
+}
+
+test "detachTab removes inactive tab and returns tab data" {
+    var manager = TabManager.init(std.testing.allocator);
+    defer manager.deinit();
+
+    const first = try manager.createTab("nimlo://start", false);
+    const second = try manager.createTab("https://example.com", false);
+    const third = try manager.createTab("https://ziglang.org", true);
+    manager.findTab(third).?.title = "Zig";
+    manager.findTab(third).?.attachWebView(@ptrFromInt(0x1));
+
+    const detached = manager.detachTab(third).?;
+
+    try std.testing.expectEqual(third, detached.id);
+    try std.testing.expectEqualStrings("Zig", detached.title);
+    try std.testing.expectEqualStrings("https://ziglang.org", detached.current_url);
+    try std.testing.expect(detached.is_private);
+    try std.testing.expectEqual(@as(?*anyopaque, @ptrFromInt(0x1)), detached.webview_handle);
+    try expectTabOrder(&manager, &.{ first, second });
+    try std.testing.expectEqual(second, manager.active_tab_id.?);
+}
+
+test "detachTab chooses next tab when detaching active middle tab" {
+    var manager = TabManager.init(std.testing.allocator);
+    defer manager.deinit();
+
+    const first = try manager.createTab("nimlo://start", false);
+    const second = try manager.createTab("https://example.com", false);
+    const third = try manager.createTab("https://ziglang.org", false);
+
+    try std.testing.expect(manager.activateTab(second));
+    const detached = manager.detachTab(second).?;
+
+    try std.testing.expectEqual(second, detached.id);
+    try expectTabOrder(&manager, &.{ first, third });
+    try std.testing.expectEqual(third, manager.active_tab_id.?);
+}
+
+test "detachTab chooses previous tab when detaching last active tab" {
+    var manager = TabManager.init(std.testing.allocator);
+    defer manager.deinit();
+
+    const first = try manager.createTab("nimlo://start", false);
+    const second = try manager.createTab("https://example.com", false);
+
+    const detached = manager.detachTab(second).?;
+
+    try std.testing.expectEqual(second, detached.id);
+    try expectTabOrder(&manager, &.{first});
+    try std.testing.expectEqual(first, manager.active_tab_id.?);
+}
+
+test "detachTab clears active tab when final tab detaches" {
+    var manager = TabManager.init(std.testing.allocator);
+    defer manager.deinit();
+
+    const first = try manager.createTab("nimlo://start", false);
+
+    const detached = manager.detachTab(first).?;
+
+    try std.testing.expectEqual(first, detached.id);
+    try std.testing.expectEqual(@as(usize, 0), manager.len());
+    try std.testing.expect(manager.active_tab_id == null);
+    try std.testing.expect(manager.activeTab() == null);
+}
+
+test "detachTab rejects unknown tab" {
+    var manager = TabManager.init(std.testing.allocator);
+    defer manager.deinit();
+
+    const first = try manager.createTab("nimlo://start", false);
+
+    try std.testing.expect(manager.detachTab(99) == null);
+    try expectTabOrder(&manager, &.{first});
+    try std.testing.expectEqual(first, manager.active_tab_id.?);
 }
 
 test "closeTab removes inactive tab without changing active tab" {

@@ -114,7 +114,12 @@ pub const Browser = struct {
             .on_tab_activated_requested = handleTabActivatedRequested,
             .on_tab_closed_requested = handleTabClosedRequested,
             .on_tab_reordered_requested = handleTabReorderedRequested,
+            .on_active_tab_detach_requested = handleActiveTabDetachRequested,
         });
+        self.publishTabsChanged();
+    }
+
+    pub fn publishChromeState(self: *Browser) void {
         self.publishTabsChanged();
     }
 
@@ -191,6 +196,7 @@ pub const Browser = struct {
         self.webview_adapter.showWebView(handle);
         self.loadTab(active_tab.*) catch return;
         self.publishTabsChanged();
+        webview_events.emitAddressBarFocusRequested();
     }
 
     fn handleUrlOpenRequested(context: *anyopaque, url: []const u8) void {
@@ -430,6 +436,27 @@ pub const Browser = struct {
         }
 
         self.publishTabsChanged();
+    }
+
+    fn handleActiveTabDetachRequested(context: *anyopaque) void {
+        const self: *Browser = @ptrCast(@alignCast(context));
+        if (self.tabs.len() <= 1) return;
+
+        const active_id = self.tabs.active_tab_id orelse return;
+        const detached = self.tabs.detachTab(active_id) orelse return;
+        self.webview_adapter.destroyWebView(detached.webview_handle);
+
+        if (self.tabs.activeTab()) |active_tab| {
+            self.showOrCreateWebViewForActiveTab(active_tab) catch {};
+        }
+        self.publishTabsChanged();
+
+        webview_events.emitTabDetached(.{
+            .title = detached.title,
+            .url = detached.current_url,
+            .favicon_url = detached.favicon_url,
+            .is_private = detached.is_private,
+        });
     }
 
     fn handleTabReorderedRequested(context: *anyopaque, from_index: usize, to_index: usize) void {
@@ -675,6 +702,13 @@ const BookmarkUrlStateRecorder = struct {
     is_bookmarked: bool = false,
 };
 
+const DetachedTabRecorder = struct {
+    count: usize = 0,
+    title: []const u8 = "",
+    url: []const u8 = "",
+    is_private: bool = false,
+};
+
 fn recordHistoryEmptyPrompt(context: *anyopaque) void {
     const recorder: *HistoryClearPromptRecorder = @ptrCast(@alignCast(context));
     recorder.empty_count += 1;
@@ -707,6 +741,14 @@ fn recordBookmarkUrlState(context: *anyopaque, tabs: []const webview_events.TabS
         return;
     }
     recorder.is_bookmarked = false;
+}
+
+fn recordDetachedTab(context: *anyopaque, tab: webview_events.DetachedTab) void {
+    const recorder: *DetachedTabRecorder = @ptrCast(@alignCast(context));
+    recorder.count += 1;
+    recorder.title = tab.title;
+    recorder.url = tab.url;
+    recorder.is_private = tab.is_private;
 }
 
 test "start creates one active startup tab" {
@@ -1539,6 +1581,67 @@ test "tab reorder command moves tab and preserves active tab" {
     try std.testing.expectEqual(first, browser.tabs.tabs.items[1].id);
     try std.testing.expectEqual(third, browser.tabs.tabs.items[2].id);
     try std.testing.expectEqual(second, browser.tabs.active_tab_id.?);
+}
+
+test "active tab detach command removes active tab and reports detached tab" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    var recorder = DetachedTabRecorder{};
+    webview_events.setAppSink(.{
+        .context = &recorder,
+        .on_tab_detached = recordDetachedTab,
+    });
+    defer webview_events.clearAppSink();
+
+    try browser.start();
+    const first = browser.tabs.active_tab_id.?;
+    webview_events.emitNewTabRequested();
+    try std.testing.expectEqual(@as(usize, 2), browser.tabs.len());
+    const second = browser.tabs.active_tab_id.?;
+    browser.tabs.findTab(second).?.current_url = "https://example.com";
+    browser.tabs.findTab(second).?.title = "Example";
+    try std.testing.expect(browser.tabs.activateTab(second));
+
+    webview_events.emitActiveTabDetachRequested();
+
+    try std.testing.expectEqual(@as(usize, 1), browser.tabs.len());
+    try std.testing.expectEqual(@as(usize, 1), recorder.count);
+    try std.testing.expectEqualStrings("Example", recorder.title);
+    try std.testing.expectEqualStrings("https://example.com", recorder.url);
+    try std.testing.expect(!recorder.is_private);
+    try std.testing.expectEqual(first, browser.tabs.active_tab_id.?);
+}
+
+test "active tab detach command ignores single-tab window" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    var recorder = DetachedTabRecorder{};
+    webview_events.setAppSink(.{
+        .context = &recorder,
+        .on_tab_detached = recordDetachedTab,
+    });
+    defer webview_events.clearAppSink();
+
+    try browser.start();
+    const first = browser.tabs.active_tab_id.?;
+
+    webview_events.emitActiveTabDetachRequested();
+
+    try std.testing.expectEqual(@as(usize, 0), recorder.count);
+    try std.testing.expectEqual(@as(usize, 1), browser.tabs.len());
+    try std.testing.expectEqual(first, browser.tabs.active_tab_id.?);
 }
 
 test "navigation event updates tab matching source WebView handle" {

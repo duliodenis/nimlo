@@ -487,6 +487,7 @@ fn addTitlebarTabStrip(window_handle: Id, target: Id) !void {
     webview_events.setChromeSinkForOwner(window_handle, .{
         .context = target.?,
         .on_tabs_changed = handleTabsChanged,
+        .on_address_bar_focus_requested = handleAddressBarFocusRequested,
         .on_app_close_requested = handleAppCloseRequested,
         .on_history_empty_requested = handleHistoryEmptyRequested,
         .on_history_clear_confirmation_requested = handleHistoryClearConfirmationRequested,
@@ -889,6 +890,15 @@ fn handleTabsChanged(_: *anyopaque, tabs: []const webview_events.TabSnapshot) vo
     renderTitlebarTabs(tabs) catch return;
 }
 
+fn handleAddressBarFocusRequested(context: *anyopaque) void {
+    const target: Id = context;
+    const address_field = getIvar(target, "addressField") orelse return;
+    if (msg0(Id, address_field, sel("window"))) |window| {
+        msg1(void, window, sel("makeFirstResponder:"), address_field);
+    }
+    msg1(void, address_field, sel("selectText:"), @as(Id, null));
+}
+
 fn handleAppCloseRequested(_: *anyopaque) void {
     if (current_window) |window| {
         msg0(void, window, sel("close"));
@@ -1019,6 +1029,7 @@ fn installCommandMenus(target: Id) void {
     if (file_menu != null and file_item != null) {
         addMenuItem(file_menu, "New Window", sel("newWindow:"), "n", NSEventModifierFlagCommand, target);
         addMenuItem(file_menu, "New Tab", sel("newTab:"), "t", NSEventModifierFlagCommand, target);
+        addMenuItem(file_menu, "Detach Tab", sel("detachTab:"), "", 0, target);
         addMenuItem(file_menu, "Close Tab", sel("closeActiveTab:"), "w", NSEventModifierFlagCommand, target);
         msg1(void, file_item, sel("setTitle:"), nsString("File"));
         msg1(void, file_item, sel("setSubmenu:"), file_menu);
@@ -1228,6 +1239,12 @@ fn installAddressBarTargetClass() void {
         target_class,
         c.sel_registerName("closeTab:"),
         @ptrCast(&closeTab),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("detachTab:"),
+        @ptrCast(&detachTab),
         "v@:@",
     );
     _ = c.class_addMethod(
@@ -1600,6 +1617,11 @@ fn closeTab(_: Id, _: Sel, sender: Id) callconv(.c) void {
     if (tab_id <= 0) return;
 
     webview_events.emitTabClosedRequested(@intCast(tab_id));
+}
+
+fn detachTab(_: Id, _: Sel, sender: Id) callconv(.c) void {
+    activateChromeWindowStateForSender(sender);
+    webview_events.emitActiveTabDetachRequested();
 }
 
 fn closeActiveTab(_: Id, _: Sel, sender: Id) callconv(.c) void {

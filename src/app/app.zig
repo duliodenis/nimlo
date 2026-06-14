@@ -16,6 +16,7 @@ pub fn run() !void {
         .context = &controller,
         .on_new_window_requested = handleNewWindowRequested,
         .on_window_closed = handleWindowClosed,
+        .on_tab_detached = handleTabDetached,
     });
     defer webview_events.clearAppSink();
 
@@ -67,6 +68,10 @@ const AppController = struct {
     }
 
     fn createWindow(self: *AppController) !void {
+        try self.createWindowWithInitialTab(null);
+    }
+
+    fn createWindowWithInitialTab(self: *AppController, initial_tab: ?webview_events.DetachedTab) !void {
         const session = try self.allocator.create(BrowserWindowSession);
         errdefer self.allocator.destroy(session);
 
@@ -82,10 +87,14 @@ const AppController = struct {
 
         try session.core.enableHistoryPersistence(self.history_path);
         try session.core.enableBookmarkPersistence(self.bookmarks_path);
+        if (initial_tab) |tab| {
+            try seedInitialTab(&session.core, tab);
+        }
         try session.window.attachWebView(&session.engine);
         try session.core.start();
-        try loadHomepage(&session.engine, self.config.homepage_url);
+        try loadInitialUrl(&session.engine, if (initial_tab) |tab| tab.url else self.config.homepage_url);
         try session.window.present();
+        session.core.publishChromeState();
 
         try self.sessions.append(self.allocator, session);
     }
@@ -130,22 +139,39 @@ fn handleNewWindowRequested(context: *anyopaque) void {
     };
 }
 
+fn handleTabDetached(context: *anyopaque, tab: webview_events.DetachedTab) void {
+    const controller: *AppController = @ptrCast(@alignCast(context));
+    controller.createWindowWithInitialTab(tab) catch |err| {
+        std.debug.print("detached tab window failed: {s}\n", .{@errorName(err)});
+    };
+}
+
 fn handleWindowClosed(context: *anyopaque, window_handle: ?*anyopaque) void {
     const controller: *AppController = @ptrCast(@alignCast(context));
     controller.removeWindow(window_handle);
 }
 
-fn loadHomepage(engine: *webview.WebViewAdapter, homepage_url: []const u8) !void {
-    if (std.mem.eql(u8, homepage_url, "nimlo://start")) {
-        try engine.loadHtml(start_page.html, homepage_url);
+fn seedInitialTab(core: *browser.Browser, tab: webview_events.DetachedTab) !void {
+    const url = try core.allocator.dupe(u8, tab.url);
+    const title = try core.allocator.dupe(u8, tab.title);
+    const favicon_url = try core.allocator.dupe(u8, tab.favicon_url);
+    const id = try core.tabs.createTab(url, tab.is_private);
+    const initial = core.tabs.findTab(id) orelse return;
+    initial.title = if (title.len == 0) initial.title else title;
+    initial.favicon_url = favicon_url;
+}
+
+fn loadInitialUrl(engine: *webview.WebViewAdapter, url: []const u8) !void {
+    if (std.mem.eql(u8, url, "nimlo://start")) {
+        try engine.loadHtml(start_page.html, url);
         return;
     }
-    if (std.mem.eql(u8, homepage_url, "nimlo://about")) {
-        try engine.loadHtml(about_page.html, homepage_url);
+    if (std.mem.eql(u8, url, "nimlo://about")) {
+        try engine.loadHtml(about_page.html, url);
         return;
     }
 
-    try engine.load(homepage_url);
+    try engine.load(url);
 }
 
 fn defaultHistoryPersistencePath(allocator: std.mem.Allocator) ![]u8 {

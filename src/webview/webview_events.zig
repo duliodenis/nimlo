@@ -24,6 +24,13 @@ pub const TabSnapshot = struct {
     is_bookmarked: bool = false,
 };
 
+pub const DetachedTab = struct {
+    title: []const u8,
+    url: []const u8,
+    favicon_url: []const u8 = "",
+    is_private: bool = false,
+};
+
 pub const EventSink = struct {
     context: *anyopaque,
     on_navigation: *const fn (context: *anyopaque, event: NavigationEvent) void,
@@ -42,11 +49,13 @@ pub const EventSink = struct {
     on_tab_activated_requested: ?*const fn (context: *anyopaque, tab_id: u64) void = null,
     on_tab_closed_requested: ?*const fn (context: *anyopaque, tab_id: u64) void = null,
     on_tab_reordered_requested: ?*const fn (context: *anyopaque, from_index: usize, to_index: usize) void = null,
+    on_active_tab_detach_requested: ?*const fn (context: *anyopaque) void = null,
 };
 
 pub const ChromeSink = struct {
     context: *anyopaque,
     on_tabs_changed: *const fn (context: *anyopaque, tabs: []const TabSnapshot) void,
+    on_address_bar_focus_requested: ?*const fn (context: *anyopaque) void = null,
     on_app_close_requested: ?*const fn (context: *anyopaque) void = null,
     on_history_empty_requested: ?*const fn (context: *anyopaque) void = null,
     on_history_clear_confirmation_requested: ?*const fn (context: *anyopaque, source_handle: ?*anyopaque) void = null,
@@ -56,6 +65,7 @@ pub const AppSink = struct {
     context: *anyopaque,
     on_new_window_requested: ?*const fn (context: *anyopaque) void = null,
     on_window_closed: ?*const fn (context: *anyopaque, window_handle: ?*anyopaque) void = null,
+    on_tab_detached: ?*const fn (context: *anyopaque, tab: DetachedTab) void = null,
 };
 
 var current_sink: ?EventSink = null;
@@ -224,9 +234,25 @@ pub fn emitTabReorderedRequested(from_index: usize, to_index: usize) void {
     }
 }
 
+pub fn emitActiveTabDetachRequested() void {
+    if (current_sink) |sink| {
+        if (sink.on_active_tab_detach_requested) |callback| {
+            callback(sink.context);
+        }
+    }
+}
+
 pub fn emitTabsChanged(tabs: []const TabSnapshot) void {
     if (current_chrome_sink) |sink| {
         sink.on_tabs_changed(sink.context, tabs);
+    }
+}
+
+pub fn emitAddressBarFocusRequested() void {
+    if (current_chrome_sink) |sink| {
+        if (sink.on_address_bar_focus_requested) |callback| {
+            callback(sink.context);
+        }
     }
 }
 
@@ -258,6 +284,14 @@ pub fn emitWindowClosed(window_handle: ?*anyopaque) void {
     if (current_app_sink) |sink| {
         if (sink.on_window_closed) |callback| {
             callback(sink.context, window_handle);
+        }
+    }
+}
+
+pub fn emitTabDetached(tab: DetachedTab) void {
+    if (current_app_sink) |sink| {
+        if (sink.on_tab_detached) |callback| {
+            callback(sink.context, tab);
         }
     }
 }

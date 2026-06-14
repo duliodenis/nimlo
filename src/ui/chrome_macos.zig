@@ -1296,6 +1296,7 @@ fn installTitlebarTabButtonClass() void {
 }
 
 fn tabButtonMouseDown(button: Id, _: Sel, event: Id) callconv(.c) void {
+    activateChromeWindowStateForSender(button);
     const tab_id = tabIdFromSender(button) orelse return;
     const index = tabSnapshotIndex(tab_id) orelse return;
     const point = eventLocationInTabDocument(event) orelse return;
@@ -1395,9 +1396,11 @@ fn webCryptoMasterKey(_: Id, _: Sel, _: Id) callconv(.c) Id {
     );
 }
 
-fn addressSubmitted(target: Id, _: Sel, _: Id) callconv(.c) void {
-    const address_field = getIvar(target, "addressField") orelse return;
-    const webview = getIvar(target, "webView") orelse return;
+fn addressSubmitted(target: Id, _: Sel, sender: Id) callconv(.c) void {
+    activateChromeWindowStateForSender(sender);
+    const active_target = current_webview_target orelse target;
+    const address_field = getIvar(active_target, "addressField") orelse return;
+    const webview = getIvar(active_target, "webView") orelse return;
     const value = msg0(Id, address_field, sel("stringValue"));
     const raw = msg0(?[*:0]const u8, value, sel("UTF8String")) orelse return;
     const input = std.mem.span(raw);
@@ -1433,15 +1436,17 @@ fn addressSubmitted(target: Id, _: Sel, _: Id) callconv(.c) void {
     std.debug.print("address bar loading: {s}\n", .{normalized});
 }
 
-fn goBack(target: Id, _: Sel, _: Id) callconv(.c) void {
-    const webview = getIvar(target, "webView") orelse return;
+fn goBack(target: Id, _: Sel, sender: Id) callconv(.c) void {
+    activateChromeWindowStateForSender(sender);
+    const webview = activeTargetWebView(target) orelse return;
     if (msg0(bool, webview, sel("canGoBack"))) {
         _ = msg0(Id, webview, sel("goBack"));
     }
 }
 
-fn goForward(target: Id, _: Sel, _: Id) callconv(.c) void {
-    const webview = getIvar(target, "webView") orelse return;
+fn goForward(target: Id, _: Sel, sender: Id) callconv(.c) void {
+    activateChromeWindowStateForSender(sender);
+    const webview = activeTargetWebView(target) orelse return;
     if (msg0(bool, webview, sel("canGoForward"))) {
         _ = msg0(Id, webview, sel("goForward"));
     }
@@ -1460,32 +1465,37 @@ fn newWindow(target: Id, _: Sel, _: Id) callconv(.c) void {
     std.debug.print("new window requested.\n", .{});
 }
 
-fn aboutNimlo(target: Id, _: Sel, _: Id) callconv(.c) void {
+fn aboutNimlo(target: Id, _: Sel, sender: Id) callconv(.c) void {
     _ = target;
+    activateChromeWindowStateForSender(sender);
     webview_events.emitUrlOpenRequested("nimlo://about");
     std.debug.print("about page requested.\n", .{});
 }
 
-fn showHistory(target: Id, _: Sel, _: Id) callconv(.c) void {
+fn showHistory(target: Id, _: Sel, sender: Id) callconv(.c) void {
     _ = target;
+    activateChromeWindowStateForSender(sender);
     webview_events.emitUrlOpenRequested("nimlo://history");
     std.debug.print("history page requested.\n", .{});
 }
 
-fn toggleBookmarkCurrentPage(target: Id, _: Sel, _: Id) callconv(.c) void {
+fn toggleBookmarkCurrentPage(target: Id, _: Sel, sender: Id) callconv(.c) void {
     _ = target;
+    activateChromeWindowStateForSender(sender);
     webview_events.emitBookmarkCurrentPageToggleRequested();
     std.debug.print("bookmark current page toggle requested.\n", .{});
 }
 
-fn showBookmarks(target: Id, _: Sel, _: Id) callconv(.c) void {
+fn showBookmarks(target: Id, _: Sel, sender: Id) callconv(.c) void {
     _ = target;
+    activateChromeWindowStateForSender(sender);
     webview_events.emitUrlOpenRequested("nimlo://bookmarks");
     std.debug.print("bookmarks page requested.\n", .{});
 }
 
-fn clearHistory(target: Id, _: Sel, _: Id) callconv(.c) void {
-    const webview = getIvar(target, "webView");
+fn clearHistory(target: Id, _: Sel, sender: Id) callconv(.c) void {
+    activateChromeWindowStateForSender(sender);
+    const webview = activeTargetWebView(target);
     webview_events.emitHistoryClearRequested(webview);
     std.debug.print("history clear requested.\n", .{});
 }
@@ -1519,6 +1529,7 @@ fn showHistoryEmptyAlert() void {
 }
 
 fn activateTab(_: Id, _: Sel, sender: Id) callconv(.c) void {
+    activateChromeWindowStateForSender(sender);
     const tab_id = msg0(isize, sender, sel("tag"));
     if (tab_id <= 0) return;
 
@@ -1526,18 +1537,21 @@ fn activateTab(_: Id, _: Sel, sender: Id) callconv(.c) void {
 }
 
 fn closeTab(_: Id, _: Sel, sender: Id) callconv(.c) void {
+    activateChromeWindowStateForSender(sender);
     const tab_id = msg0(isize, sender, sel("tag"));
     if (tab_id <= 0) return;
 
     webview_events.emitTabClosedRequested(@intCast(tab_id));
 }
 
-fn closeActiveTab(_: Id, _: Sel, _: Id) callconv(.c) void {
+fn closeActiveTab(_: Id, _: Sel, sender: Id) callconv(.c) void {
+    activateChromeWindowStateForSender(sender);
     const tab_id = activeTabId() orelse return;
     webview_events.emitTabClosedRequested(tab_id);
 }
 
-fn focusAddressBar(_: Id, _: Sel, _: Id) callconv(.c) void {
+fn focusAddressBar(_: Id, _: Sel, sender: Id) callconv(.c) void {
+    activateChromeWindowStateForSender(sender);
     const address_field = current_address_field orelse return;
     if (current_window) |window| {
         msg1(void, window, sel("makeFirstResponder:"), address_field);
@@ -1545,17 +1559,34 @@ fn focusAddressBar(_: Id, _: Sel, _: Id) callconv(.c) void {
     msg1(void, address_field, sel("selectText:"), @as(Id, null));
 }
 
-fn nextTab(_: Id, _: Sel, _: Id) callconv(.c) void {
+fn nextTab(_: Id, _: Sel, sender: Id) callconv(.c) void {
+    activateChromeWindowStateForSender(sender);
     activateRelativeTab(1);
 }
 
-fn previousTab(_: Id, _: Sel, _: Id) callconv(.c) void {
+fn previousTab(_: Id, _: Sel, sender: Id) callconv(.c) void {
+    activateChromeWindowStateForSender(sender);
     activateRelativeTab(-1);
 }
 
 fn activateChromeWindowStateForSender(sender: Id) void {
     const window_handle = windowForActionSender(sender) orelse return;
     activateChromeWindowState(window_handle);
+}
+
+fn activateChromeWindowStateForWebView(webview: Id) void {
+    if (webview == null) return;
+    if (!msg1(bool, webview, sel("respondsToSelector:"), sel("window"))) return;
+
+    const window_handle = msg0(Id, webview, sel("window"));
+    if (window_handle == null) return;
+
+    activateChromeWindowState(window_handle);
+}
+
+fn activeTargetWebView(fallback_target: Id) Id {
+    const target = current_webview_target orelse fallback_target;
+    return getIvar(target, "webView");
 }
 
 fn windowForActionSender(sender: Id) ?Id {
@@ -1573,7 +1604,9 @@ fn windowForActionSender(sender: Id) ?Id {
     return window_handle;
 }
 
-fn windowDidResize(_: Id, _: Sel, _: Id) callconv(.c) void {
+fn windowDidResize(_: Id, _: Sel, notification: Id) callconv(.c) void {
+    const window_handle = msg0(Id, notification, sel("object"));
+    if (window_handle != null) activateChromeWindowState(window_handle);
     renderTitlebarTabs(current_tab_snapshots.items) catch return;
 }
 
@@ -1583,8 +1616,9 @@ fn windowDidBecomeKey(_: Id, _: Sel, notification: Id) callconv(.c) void {
     activateChromeWindowState(window_handle);
 }
 
-fn reload(target: Id, _: Sel, _: Id) callconv(.c) void {
-    const webview = getIvar(target, "webView") orelse return;
+fn reload(target: Id, _: Sel, sender: Id) callconv(.c) void {
+    activateChromeWindowStateForSender(sender);
+    const webview = activeTargetWebView(target) orelse return;
 
     if (webViewIsLoading(webview)) {
         _ = msg0(Id, webview, sel("stopLoading"));
@@ -1705,6 +1739,7 @@ fn localFileUrlIsDirectory(file_url: []const u8) bool {
 }
 
 fn noteLocalDirectoryLoad(webview: Id, file_url: []const u8, path: []const u8, page_url_text: []const u8) void {
+    activateChromeWindowStateForWebView(webview);
     setWebViewInternal(webview, false);
     setWebViewLoading(webview, false);
 
@@ -1862,6 +1897,8 @@ fn appendEscapedHtml(output: *std.ArrayList(u8), text: []const u8) !void {
 }
 
 fn decideNavigationPolicy(_: Id, _: Sel, webview: Id, navigation_action: Id, decision_handler: *NavigationDecisionHandler) callconv(.c) void {
+    activateChromeWindowStateForWebView(webview);
+
     const request = msg0(Id, navigation_action, sel("request"));
     const url = if (request != null) msg0(Id, request, sel("URL")) else null;
     const absolute = if (url != null) msg0(Id, url, sel("absoluteString")) else null;
@@ -1928,6 +1965,7 @@ fn isExternalWebUrl(url: []const u8) bool {
 
 fn navigationStarted(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
     _ = target;
+    activateChromeWindowStateForWebView(webview);
     setWebViewLoading(webview, true);
     updateAddressFromWebView(webview);
     updateWindowTitleFromWebView(webview);
@@ -1936,12 +1974,14 @@ fn navigationStarted(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
 
 fn navigationChanged(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
     _ = target;
+    activateChromeWindowStateForWebView(webview);
     updateAddressFromWebView(webview);
     emitNavigationFromWebView(webview, if (webViewIsLoading(webview)) .loading else .idle, null);
 }
 
 fn navigationFinished(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
     _ = target;
+    activateChromeWindowStateForWebView(webview);
     setWebViewLoading(webview, false);
     updateAddressFromWebView(webview);
     updateWindowTitleFromWebView(webview);
@@ -1951,6 +1991,7 @@ fn navigationFinished(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void 
 
 fn navigationFailed(target: Id, _: Sel, webview: Id, _: Id, _: Id) callconv(.c) void {
     _ = target;
+    activateChromeWindowStateForWebView(webview);
     setWebViewLoading(webview, false);
     updateAddressFromWebView(webview);
     emitNavigationFromWebView(webview, .failed, null);

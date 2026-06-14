@@ -101,6 +101,7 @@ pub const Browser = struct {
             .on_navigation = handleNavigationEvent,
             .on_new_tab_requested = handleNewTabRequested,
             .on_url_open_requested = handleUrlOpenRequested,
+            .on_active_tab_url_requested = handleActiveTabUrlRequested,
             .on_bookmark_current_page_toggle_requested = handleBookmarkCurrentPageToggleRequested,
             .on_internal_page_reload_requested = handleInternalPageReloadRequested,
             .on_history_clear_requested = handleHistoryClearRequested,
@@ -195,6 +196,11 @@ pub const Browser = struct {
     fn handleUrlOpenRequested(context: *anyopaque, url: []const u8) void {
         const self: *Browser = @ptrCast(@alignCast(context));
         self.openOrActivateUrl(url) catch return;
+    }
+
+    fn handleActiveTabUrlRequested(context: *anyopaque, url: []const u8) void {
+        const self: *Browser = @ptrCast(@alignCast(context));
+        self.loadUrlInActiveTab(url) catch return;
     }
 
     fn handleBookmarkCurrentPageToggleRequested(context: *anyopaque) void {
@@ -357,6 +363,26 @@ pub const Browser = struct {
         _ = try self.tabs.createTab(owned_url, self.private_mode.enabled);
         const active_tab = self.tabs.activeTab() orelse return;
         try self.showOrCreateWebViewForActiveTab(active_tab);
+        self.publishTabsChanged();
+    }
+
+    fn loadUrlInActiveTab(self: *Browser, url: []const u8) !void {
+        const active_tab = self.tabs.activeTab() orelse return;
+        const owned_url = try self.allocator.dupe(u8, url);
+        active_tab.updateNavigation(.{
+            .current_url = owned_url,
+            .title = "",
+            .loading_state = .loading,
+        });
+
+        if (active_tab.webview_handle) |handle| {
+            self.webview_adapter.showWebView(handle);
+        } else {
+            const handle = try self.webview_adapter.createWebView();
+            active_tab.attachWebView(handle);
+            self.webview_adapter.showWebView(handle);
+        }
+        try self.loadTab(active_tab.*);
         self.publishTabsChanged();
     }
 
@@ -1395,6 +1421,26 @@ test "open url command creates about tab" {
     const active_tab = browser.tabs.activeTab().?;
     try std.testing.expectEqualStrings("nimlo://about", active_tab.current_url);
     try std.testing.expectEqualStrings("About Nimlo", active_tab.title);
+}
+
+test "active tab url command loads current tab without creating another tab" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.start();
+    webview_events.emitNewTabRequested();
+    const second = browser.tabs.active_tab_id.?;
+
+    webview_events.emitActiveTabUrlRequested("https://example.com/docs");
+
+    try std.testing.expectEqual(@as(usize, 2), browser.tabs.len());
+    try std.testing.expectEqual(second, browser.tabs.active_tab_id.?);
+    try std.testing.expectEqualStrings("https://example.com/docs", browser.tabs.activeTab().?.current_url);
 }
 
 test "open url command creates bookmarks tab" {

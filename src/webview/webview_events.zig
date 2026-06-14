@@ -29,6 +29,7 @@ pub const EventSink = struct {
     on_navigation: *const fn (context: *anyopaque, event: NavigationEvent) void,
     on_new_tab_requested: ?*const fn (context: *anyopaque) void = null,
     on_url_open_requested: ?*const fn (context: *anyopaque, url: []const u8) void = null,
+    on_active_tab_url_requested: ?*const fn (context: *anyopaque, url: []const u8) void = null,
     on_bookmark_current_page_toggle_requested: ?*const fn (context: *anyopaque) void = null,
     on_internal_page_reload_requested: ?*const fn (context: *anyopaque, source_handle: ?*anyopaque, url: []const u8) void = null,
     on_history_clear_requested: ?*const fn (context: *anyopaque, source_handle: ?*anyopaque) void = null,
@@ -219,6 +220,14 @@ pub fn emitNewWindowRequested() void {
 pub fn emitUrlOpenRequested(url: []const u8) void {
     if (current_sink) |sink| {
         if (sink.on_url_open_requested) |callback| {
+            callback(sink.context, url);
+        }
+    }
+}
+
+pub fn emitActiveTabUrlRequested(url: []const u8) void {
+    if (current_sink) |sink| {
+        if (sink.on_active_tab_url_requested) |callback| {
             callback(sink.context, url);
         }
     }

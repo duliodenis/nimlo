@@ -1409,14 +1409,14 @@ fn addressSubmitted(target: Id, _: Sel, _: Id) callconv(.c) void {
 
     if (std.mem.eql(u8, normalized, "nimlo://start")) {
         msg1(void, address_field, sel("setStringValue:"), nsString("nimlo://start"));
-        loadInternalStartPage(webview) catch return;
+        webview_events.emitActiveTabUrlRequested("nimlo://start");
         std.debug.print("address bar loading internal page: {s}\n", .{normalized});
         return;
     }
 
     if (std.mem.eql(u8, normalized, "nimlo://about")) {
         msg1(void, address_field, sel("setStringValue:"), nsString("nimlo://about"));
-        loadInternalAboutPage(webview) catch return;
+        webview_events.emitActiveTabUrlRequested("nimlo://about");
         std.debug.print("address bar loading internal page: {s}\n", .{normalized});
         return;
     }
@@ -1428,15 +1428,8 @@ fn addressSubmitted(target: Id, _: Sel, _: Id) callconv(.c) void {
     }
 
     const url_z = std.heap.page_allocator.dupeZ(u8, normalized) catch return;
-    const ns_url = msg1(Id, cls("NSURL"), sel("URLWithString:"), nsString(url_z));
-    if (ns_url == null) return;
-
-    const request = msg1(Id, cls("NSURLRequest"), sel("requestWithURL:"), ns_url);
-    if (request == null) return;
-
     msg1(void, address_field, sel("setStringValue:"), nsString(url_z));
-    noteExternalLoad(webview);
-    _ = msg1(Id, webview, sel("loadRequest:"), request);
+    webview_events.emitActiveTabUrlRequested(normalized);
     std.debug.print("address bar loading: {s}\n", .{normalized});
 }
 
@@ -1454,8 +1447,9 @@ fn goForward(target: Id, _: Sel, _: Id) callconv(.c) void {
     }
 }
 
-fn newTab(target: Id, _: Sel, _: Id) callconv(.c) void {
+fn newTab(target: Id, _: Sel, sender: Id) callconv(.c) void {
     _ = target;
+    activateChromeWindowStateForSender(sender);
     webview_events.emitNewTabRequested();
     std.debug.print("new tab requested.\n", .{});
 }
@@ -1557,6 +1551,26 @@ fn nextTab(_: Id, _: Sel, _: Id) callconv(.c) void {
 
 fn previousTab(_: Id, _: Sel, _: Id) callconv(.c) void {
     activateRelativeTab(-1);
+}
+
+fn activateChromeWindowStateForSender(sender: Id) void {
+    const window_handle = windowForActionSender(sender) orelse return;
+    activateChromeWindowState(window_handle);
+}
+
+fn windowForActionSender(sender: Id) ?Id {
+    if (sender != null and msg1(bool, sender, sel("respondsToSelector:"), sel("window"))) {
+        if (msg0(Id, sender, sel("window"))) |window_handle| {
+            return window_handle;
+        }
+    }
+
+    const app = msg0(Id, cls("NSApplication"), sel("sharedApplication"));
+    if (app == null) return null;
+
+    const window_handle = msg0(Id, app, sel("keyWindow"));
+    if (window_handle == null) return null;
+    return window_handle;
 }
 
 fn windowDidResize(_: Id, _: Sel, _: Id) callconv(.c) void {

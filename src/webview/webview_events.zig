@@ -55,6 +55,7 @@ pub const ChromeSink = struct {
 pub const AppSink = struct {
     context: *anyopaque,
     on_new_window_requested: ?*const fn (context: *anyopaque) void = null,
+    on_window_closed: ?*const fn (context: *anyopaque, window_handle: ?*anyopaque) void = null,
 };
 
 var current_sink: ?EventSink = null;
@@ -82,6 +83,24 @@ pub fn setSink(sink: EventSink) void {
 pub fn clearSink() void {
     current_sink = null;
     event_sinks.clearRetainingCapacity();
+}
+
+pub fn clearSinkForOwner(owner: ?*anyopaque) void {
+    var index: usize = 0;
+    while (index < event_sinks.items.len) {
+        if (event_sinks.items[index].owner == owner) {
+            _ = event_sinks.orderedRemove(index);
+            continue;
+        }
+        index += 1;
+    }
+
+    if (current_sink) |sink| {
+        for (event_sinks.items) |entry| {
+            if (entry.sink.context == sink.context) return;
+        }
+        current_sink = if (event_sinks.items.len > 0) event_sinks.items[event_sinks.items.len - 1].sink else null;
+    }
 }
 
 pub fn setSinkForOwner(owner: ?*anyopaque, sink: EventSink) void {
@@ -119,6 +138,24 @@ pub fn setChromeSink(sink: ChromeSink) void {
 pub fn clearChromeSink() void {
     current_chrome_sink = null;
     chrome_sinks.clearRetainingCapacity();
+}
+
+pub fn clearChromeSinkForOwner(owner: ?*anyopaque) void {
+    var index: usize = 0;
+    while (index < chrome_sinks.items.len) {
+        if (chrome_sinks.items[index].owner == owner) {
+            _ = chrome_sinks.orderedRemove(index);
+            continue;
+        }
+        index += 1;
+    }
+
+    if (current_chrome_sink) |sink| {
+        for (chrome_sinks.items) |entry| {
+            if (entry.sink.context == sink.context) return;
+        }
+        current_chrome_sink = if (chrome_sinks.items.len > 0) chrome_sinks.items[chrome_sinks.items.len - 1].sink else null;
+    }
 }
 
 pub fn setChromeSinkForOwner(owner: ?*anyopaque, sink: ChromeSink) void {
@@ -213,6 +250,14 @@ pub fn emitNewWindowRequested() void {
     if (current_app_sink) |sink| {
         if (sink.on_new_window_requested) |callback| {
             callback(sink.context);
+        }
+    }
+}
+
+pub fn emitWindowClosed(window_handle: ?*anyopaque) void {
+    if (current_app_sink) |sink| {
+        if (sink.on_window_closed) |callback| {
+            callback(sink.context, window_handle);
         }
     }
 }

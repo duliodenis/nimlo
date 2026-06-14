@@ -129,6 +129,18 @@ pub const MacOSWebView = struct {
         webview_events.setSinkForOwner(self.window_handle, sink);
     }
 
+    pub fn clearEventSink(self: *MacOSWebView) void {
+        webview_events.clearSinkForOwner(self.window_handle);
+    }
+
+    pub fn clearChromeSink(self: *MacOSWebView) void {
+        if (self.window_handle) |owner| {
+            webview_events.clearChromeSinkForOwner(owner);
+        } else {
+            webview_events.clearChromeSink();
+        }
+    }
+
     fn createNativeWebView(self: *MacOSWebView, bounds: chrome.CGRect, hidden: bool) !Id {
         if (self.content_view == null) return error.MacOSContentViewUnavailable;
 

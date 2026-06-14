@@ -48,4 +48,14 @@ pub const StubWebView = struct {
         _ = self;
         webview_events.setSink(sink);
     }
+
+    pub fn clearEventSink(self: *StubWebView) void {
+        _ = self;
+        webview_events.clearSink();
+    }
+
+    pub fn clearChromeSink(self: *StubWebView) void {
+        _ = self;
+        webview_events.clearChromeSink();
+    }
 };

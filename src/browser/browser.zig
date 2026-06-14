@@ -119,8 +119,8 @@ pub const Browser = struct {
     }
 
     pub fn deinit(self: *Browser) void {
-        webview_events.clearSink();
-        webview_events.clearChromeSink();
+        self.webview_adapter.clearEventSink();
+        self.webview_adapter.clearChromeSink();
         self.last_published_tabs.deinit(self.allocator);
         self.bookmarks.deinit();
         if (self.bookmarks_persistence_path) |path| {
@@ -410,7 +410,7 @@ pub const Browser = struct {
         const self: *Browser = @ptrCast(@alignCast(context));
         const closing_tab = self.tabs.findTab(tab_id) orelse return;
         const closing_handle = closing_tab.webview_handle;
-        if (self.tabs.len() == 1 and std.mem.eql(u8, closing_tab.current_url, "nimlo://start")) {
+        if (self.tabs.len() == 1) {
             webview_events.emitAppCloseRequested();
             return;
         }
@@ -418,13 +418,6 @@ pub const Browser = struct {
         if (!self.tabs.closeTab(tab_id)) return;
 
         self.webview_adapter.destroyWebView(closing_handle);
-
-        if (self.tabs.len() == 0) {
-            _ = self.tabs.createTab(
-                self.preferences.homepage_url,
-                self.private_mode.enabled,
-            ) catch return;
-        }
 
         const active_tab = self.tabs.activeTab() orelse return;
         if (active_tab.webview_handle) |handle| {
@@ -1595,7 +1588,7 @@ test "close tab command removes tab and activates adjacent tab" {
     try std.testing.expectEqual(first, browser.tabs.active_tab_id.?);
 }
 
-test "close final non-start tab command creates a fresh startup tab" {
+test "close final non-start tab command requests app close without replacing tab" {
     var adapter = webview.WebViewAdapter.init();
     var browser = Browser.init(
         preferences.Preferences.default(),
@@ -1603,6 +1596,13 @@ test "close final non-start tab command creates a fresh startup tab" {
         &adapter,
     );
     defer browser.deinit();
+
+    var close_request_count: usize = 0;
+    webview_events.setChromeSink(.{
+        .context = &close_request_count,
+        .on_tabs_changed = ignoreTabsChanged,
+        .on_app_close_requested = countAppCloseRequested,
+    });
 
     try browser.start();
     const original = browser.tabs.active_tab_id.?;
@@ -1613,9 +1613,10 @@ test "close final non-start tab command creates a fresh startup tab" {
 
     webview_events.emitTabClosedRequested(original);
 
+    try std.testing.expectEqual(@as(usize, 1), close_request_count);
     try std.testing.expectEqual(@as(usize, 1), browser.tabs.len());
-    try std.testing.expect(browser.tabs.active_tab_id.? != original);
-    try std.testing.expectEqualStrings("nimlo://start", browser.tabs.activeTab().?.current_url);
+    try std.testing.expectEqual(original, browser.tabs.active_tab_id.?);
+    try std.testing.expectEqualStrings("https://example.com", browser.tabs.activeTab().?.current_url);
 }
 
 fn countAppCloseRequested(context: *anyopaque) void {

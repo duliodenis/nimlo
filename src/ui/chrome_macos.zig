@@ -240,6 +240,49 @@ fn activateChromeWindowState(window_handle: Id) void {
     }
 }
 
+fn removeChromeWindowState(window_handle: Id) void {
+    saveActiveChromeWindowState();
+
+    var index: usize = 0;
+    while (index < chrome_window_states.items.len) {
+        if (chrome_window_states.items[index].window != window_handle) {
+            index += 1;
+            continue;
+        }
+
+        chrome_window_states.items[index].tab_snapshots.deinit(std.heap.page_allocator);
+        chrome_window_states.items[index].rendered_tab_controls.deinit(std.heap.page_allocator);
+        _ = chrome_window_states.orderedRemove(index);
+        break;
+    }
+
+    webview_events.clearChromeSinkForOwner(window_handle);
+
+    if (current_window == window_handle) {
+        active_chrome_window_state_index = null;
+        current_window = null;
+        current_address_field = null;
+        current_bookmark_button = null;
+        current_reload_button = null;
+        current_tab_icon = null;
+        current_tab_label = null;
+        current_tab_container = null;
+        current_tab_document_view = null;
+        current_tab_new_button = null;
+        current_tab_scroll_view = null;
+        current_tab_target = null;
+        current_webview_target = null;
+        current_tab_snapshots = .empty;
+        rendered_tab_controls = .empty;
+    }
+
+    if (chrome_window_states.items.len > 0) {
+        const next_window = chrome_window_states.items[chrome_window_states.items.len - 1].window;
+        active_chrome_window_state_index = null;
+        activateChromeWindowState(next_window);
+    }
+}
+
 pub fn noteExternalLoad(webview: Id) void {
     const state = ensureWebViewChromeState(webview) catch return;
     state.is_internal = false;
@@ -487,6 +530,15 @@ fn installWindowResizeObserver(window_handle: Id, target: Id) void {
         target,
         sel("windowDidBecomeKey:"),
         nsString("NSWindowDidBecomeKeyNotification"),
+        window_handle,
+    );
+    msg4(
+        void,
+        notification_center,
+        sel("addObserver:selector:name:object:"),
+        target,
+        sel("windowWillClose:"),
+        nsString("NSWindowWillCloseNotification"),
         window_handle,
     );
 }
@@ -1216,6 +1268,12 @@ fn installAddressBarTargetClass() void {
     );
     _ = c.class_addMethod(
         target_class,
+        c.sel_registerName("windowWillClose:"),
+        @ptrCast(&windowWillClose),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
         c.sel_registerName("webView:didStartProvisionalNavigation:"),
         @ptrCast(&navigationStarted),
         "v@:@@",
@@ -1614,6 +1672,14 @@ fn windowDidBecomeKey(_: Id, _: Sel, notification: Id) callconv(.c) void {
     const window_handle = msg0(Id, notification, sel("object"));
     if (window_handle == null) return;
     activateChromeWindowState(window_handle);
+}
+
+fn windowWillClose(_: Id, _: Sel, notification: Id) callconv(.c) void {
+    const window_handle = msg0(Id, notification, sel("object"));
+    if (window_handle == null) return;
+
+    removeChromeWindowState(window_handle);
+    webview_events.emitWindowClosed(window_handle);
 }
 
 fn reload(target: Id, _: Sel, sender: Id) callconv(.c) void {

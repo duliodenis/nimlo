@@ -15,6 +15,7 @@ pub fn run() !void {
     webview_events.setAppSink(.{
         .context = &controller,
         .on_new_window_requested = handleNewWindowRequested,
+        .on_window_closed = handleWindowClosed,
     });
     defer webview_events.clearAppSink();
 
@@ -94,6 +95,22 @@ const AppController = struct {
 
         try self.sessions.items[0].window.runEventLoop();
     }
+
+    fn removeWindow(self: *AppController, window_handle: ?*anyopaque) void {
+        var index: usize = 0;
+        while (index < self.sessions.items.len) {
+            const session = self.sessions.items[index];
+            if (session.window.nativeHandle() != window_handle) {
+                index += 1;
+                continue;
+            }
+
+            _ = self.sessions.orderedRemove(index);
+            session.deinit();
+            self.allocator.destroy(session);
+            return;
+        }
+    }
 };
 
 const BrowserWindowSession = struct {
@@ -111,6 +128,11 @@ fn handleNewWindowRequested(context: *anyopaque) void {
     controller.createWindow() catch |err| {
         std.debug.print("new window failed: {s}\n", .{@errorName(err)});
     };
+}
+
+fn handleWindowClosed(context: *anyopaque, window_handle: ?*anyopaque) void {
+    const controller: *AppController = @ptrCast(@alignCast(context));
+    controller.removeWindow(window_handle);
 }
 
 fn loadHomepage(engine: *webview.WebViewAdapter, homepage_url: []const u8) !void {

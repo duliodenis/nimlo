@@ -43,4 +43,12 @@ pub const WebViewAdapter = struct {
     pub fn setEventSink(self: *WebViewAdapter, sink: EventSink) void {
         self.platform.setEventSink(sink);
     }
+
+    pub fn clearEventSink(self: *WebViewAdapter) void {
+        self.platform.clearEventSink();
+    }
+
+    pub fn clearChromeSink(self: *WebViewAdapter) void {
+        self.platform.clearChromeSink();
+    }
 };

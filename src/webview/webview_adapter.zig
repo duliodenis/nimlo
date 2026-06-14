@@ -41,7 +41,6 @@ pub const WebViewAdapter = struct {
     }
 
     pub fn setEventSink(self: *WebViewAdapter, sink: EventSink) void {
-        _ = self;
-        webview_events.setSink(sink);
+        self.platform.setEventSink(sink);
     }
 };

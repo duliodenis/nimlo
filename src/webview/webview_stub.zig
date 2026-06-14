@@ -1,4 +1,5 @@
 const std = @import("std");
+const webview_events = @import("webview_events.zig");
 
 pub const StubWebView = struct {
     pub fn init() StubWebView {
@@ -41,5 +42,10 @@ pub const StubWebView = struct {
     pub fn activeHandle(self: *StubWebView) ?*anyopaque {
         _ = self;
         return null;
+    }
+
+    pub fn setEventSink(self: *StubWebView, sink: webview_events.EventSink) void {
+        _ = self;
+        webview_events.setSink(sink);
     }
 };

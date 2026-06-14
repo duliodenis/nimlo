@@ -20,6 +20,14 @@ pub const AppWindow = struct {
         try adapter.attachToWindow(self.nativeHandle());
     }
 
+    pub fn present(self: *AppWindow) !void {
+        try self.platform.present();
+    }
+
+    pub fn runEventLoop(self: *AppWindow) !void {
+        try self.platform.runEventLoop();
+    }
+
     pub fn show(self: *AppWindow) !void {
         try self.platform.show();
     }

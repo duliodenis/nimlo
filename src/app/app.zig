@@ -6,36 +6,111 @@ const about_page = @import("../ui/about_page.zig");
 const start_page = @import("../ui/start_page.zig");
 const window = @import("window.zig");
 const webview = @import("../webview/webview_adapter.zig");
+const webview_events = @import("../webview/webview_events.zig");
 
 pub fn run() !void {
-    const config = preferences.Preferences.default();
-    const privacy = private_mode.PrivateModeConfig.default();
-    var app_window = try window.AppWindow.create(.{
-        .title = "Nimlo",
-        .width = 1024,
-        .height = 768,
+    var controller = try AppController.init(std.heap.page_allocator);
+    defer controller.deinit();
+
+    webview_events.setAppSink(.{
+        .context = &controller,
+        .on_new_window_requested = handleNewWindowRequested,
     });
-    var engine = webview.WebViewAdapter.init();
-    var core = browser.Browser.init(config, privacy, &engine);
-    defer core.deinit();
-    const data_dir_path = try defaultAppDataDirectoryPath(std.heap.page_allocator);
-    defer std.heap.page_allocator.free(data_dir_path);
-    try ensurePersistenceDirectory(data_dir_path);
-    const history_path = try defaultHistoryPersistencePath(std.heap.page_allocator);
-    defer std.heap.page_allocator.free(history_path);
-    try core.enableHistoryPersistence(history_path);
-    const bookmarks_path = try defaultBookmarksPersistencePath(std.heap.page_allocator);
-    defer std.heap.page_allocator.free(bookmarks_path);
-    try core.enableBookmarkPersistence(bookmarks_path);
+    defer webview_events.clearAppSink();
 
-    // TODO(app shell): add browser chrome, commands, menus, and shortcuts.
-    // TODO(webview): replace the scaffold with a real system WebView mount.
-    try core.start();
-    try app_window.attachWebView(&engine);
-    try loadHomepage(&engine, config.homepage_url);
-
+    try controller.createWindow();
     std.debug.print("Nimlo app shell placeholder ready.\n", .{});
-    try app_window.show();
+    try controller.run();
+}
+
+const AppController = struct {
+    allocator: std.mem.Allocator,
+    config: preferences.Preferences,
+    privacy: private_mode.PrivateModeConfig,
+    data_dir_path: []const u8,
+    history_path: []const u8,
+    bookmarks_path: []const u8,
+    sessions: std.ArrayList(*BrowserWindowSession),
+
+    fn init(allocator: std.mem.Allocator) !AppController {
+        const data_dir_path = try defaultAppDataDirectoryPath(allocator);
+        errdefer allocator.free(data_dir_path);
+        try ensurePersistenceDirectory(data_dir_path);
+
+        const history_path = try defaultHistoryPersistencePath(allocator);
+        errdefer allocator.free(history_path);
+
+        const bookmarks_path = try defaultBookmarksPersistencePath(allocator);
+        errdefer allocator.free(bookmarks_path);
+
+        return .{
+            .allocator = allocator,
+            .config = preferences.Preferences.default(),
+            .privacy = private_mode.PrivateModeConfig.default(),
+            .data_dir_path = data_dir_path,
+            .history_path = history_path,
+            .bookmarks_path = bookmarks_path,
+            .sessions = .empty,
+        };
+    }
+
+    fn deinit(self: *AppController) void {
+        for (self.sessions.items) |session| {
+            session.deinit();
+            self.allocator.destroy(session);
+        }
+        self.sessions.deinit(self.allocator);
+        self.allocator.free(self.bookmarks_path);
+        self.allocator.free(self.history_path);
+        self.allocator.free(self.data_dir_path);
+    }
+
+    fn createWindow(self: *AppController) !void {
+        const session = try self.allocator.create(BrowserWindowSession);
+        errdefer self.allocator.destroy(session);
+
+        session.* = undefined;
+        session.window = try window.AppWindow.create(.{
+            .title = "Nimlo",
+            .width = 1024,
+            .height = 768,
+        });
+        session.engine = webview.WebViewAdapter.init();
+        session.core = browser.Browser.init(self.config, self.privacy, &session.engine);
+        errdefer session.core.deinit();
+
+        try session.core.enableHistoryPersistence(self.history_path);
+        try session.core.enableBookmarkPersistence(self.bookmarks_path);
+        try session.window.attachWebView(&session.engine);
+        try session.core.start();
+        try loadHomepage(&session.engine, self.config.homepage_url);
+        try session.window.present();
+
+        try self.sessions.append(self.allocator, session);
+    }
+
+    fn run(self: *AppController) !void {
+        if (self.sessions.items.len == 0) return;
+
+        try self.sessions.items[0].window.runEventLoop();
+    }
+};
+
+const BrowserWindowSession = struct {
+    window: window.AppWindow,
+    engine: webview.WebViewAdapter,
+    core: browser.Browser,
+
+    fn deinit(self: *BrowserWindowSession) void {
+        self.core.deinit();
+    }
+};
+
+fn handleNewWindowRequested(context: *anyopaque) void {
+    const controller: *AppController = @ptrCast(@alignCast(context));
+    controller.createWindow() catch |err| {
+        std.debug.print("new window failed: {s}\n", .{@errorName(err)});
+    };
 }
 
 fn loadHomepage(engine: *webview.WebViewAdapter, homepage_url: []const u8) !void {

@@ -51,8 +51,28 @@ pub const ChromeSink = struct {
     on_history_clear_confirmation_requested: ?*const fn (context: *anyopaque, source_handle: ?*anyopaque) void = null,
 };
 
+pub const AppSink = struct {
+    context: *anyopaque,
+    on_new_window_requested: ?*const fn (context: *anyopaque) void = null,
+};
+
 var current_sink: ?EventSink = null;
 var current_chrome_sink: ?ChromeSink = null;
+var current_app_sink: ?AppSink = null;
+var event_sinks: std.ArrayList(OwnedEventSink) = .empty;
+var chrome_sinks: std.ArrayList(OwnedChromeSink) = .empty;
+
+const std = @import("std");
+
+const OwnedEventSink = struct {
+    owner: ?*anyopaque,
+    sink: EventSink,
+};
+
+const OwnedChromeSink = struct {
+    owner: ?*anyopaque,
+    sink: ChromeSink,
+};
 
 pub fn setSink(sink: EventSink) void {
     current_sink = sink;
@@ -60,6 +80,35 @@ pub fn setSink(sink: EventSink) void {
 
 pub fn clearSink() void {
     current_sink = null;
+    event_sinks.clearRetainingCapacity();
+}
+
+pub fn setSinkForOwner(owner: ?*anyopaque, sink: EventSink) void {
+    for (event_sinks.items) |*entry| {
+        if (entry.owner == owner) {
+            entry.sink = sink;
+            current_sink = sink;
+            return;
+        }
+    }
+
+    event_sinks.append(std.heap.page_allocator, .{
+        .owner = owner,
+        .sink = sink,
+    }) catch {
+        current_sink = sink;
+        return;
+    };
+    current_sink = sink;
+}
+
+pub fn activateSinkForOwner(owner: ?*anyopaque) void {
+    for (event_sinks.items) |entry| {
+        if (entry.owner == owner) {
+            current_sink = entry.sink;
+            return;
+        }
+    }
 }
 
 pub fn setChromeSink(sink: ChromeSink) void {
@@ -68,6 +117,43 @@ pub fn setChromeSink(sink: ChromeSink) void {
 
 pub fn clearChromeSink() void {
     current_chrome_sink = null;
+    chrome_sinks.clearRetainingCapacity();
+}
+
+pub fn setChromeSinkForOwner(owner: ?*anyopaque, sink: ChromeSink) void {
+    for (chrome_sinks.items) |*entry| {
+        if (entry.owner == owner) {
+            entry.sink = sink;
+            current_chrome_sink = sink;
+            return;
+        }
+    }
+
+    chrome_sinks.append(std.heap.page_allocator, .{
+        .owner = owner,
+        .sink = sink,
+    }) catch {
+        current_chrome_sink = sink;
+        return;
+    };
+    current_chrome_sink = sink;
+}
+
+pub fn activateChromeSinkForOwner(owner: ?*anyopaque) void {
+    for (chrome_sinks.items) |entry| {
+        if (entry.owner == owner) {
+            current_chrome_sink = entry.sink;
+            return;
+        }
+    }
+}
+
+pub fn setAppSink(sink: AppSink) void {
+    current_app_sink = sink;
+}
+
+pub fn clearAppSink() void {
+    current_app_sink = null;
 }
 
 pub fn emitNavigation(event: NavigationEvent) void {
@@ -117,6 +203,14 @@ pub fn emitAppCloseRequested() void {
 pub fn emitNewTabRequested() void {
     if (current_sink) |sink| {
         if (sink.on_new_tab_requested) |callback| {
+            callback(sink.context);
+        }
+    }
+}
+
+pub fn emitNewWindowRequested() void {
+    if (current_app_sink) |sink| {
+        if (sink.on_new_window_requested) |callback| {
             callback(sink.context);
         }
     }

@@ -15,12 +15,21 @@ pub const StubWindow = struct {
     }
 
     pub fn show(self: *StubWindow) !void {
+        try self.present();
+        try self.runEventLoop();
+    }
+
+    pub fn present(self: *StubWindow) !void {
         std.debug.print("window scaffold: {s} ({d}x{d})\n", .{
             self.title,
             self.width,
             self.height,
         });
         // TODO(app shell): add a platform window implementation for this OS.
+    }
+
+    pub fn runEventLoop(self: *StubWindow) !void {
+        _ = self;
     }
 
     pub fn nativeHandle(self: *StubWindow) ?*anyopaque {

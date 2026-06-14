@@ -1,5 +1,6 @@
 const std = @import("std");
 const chrome = @import("../ui/chrome_macos.zig");
+const webview_events = @import("webview_events.zig");
 
 const c = @cImport({
     @cInclude("objc/runtime.h");
@@ -122,6 +123,10 @@ pub const MacOSWebView = struct {
 
     pub fn activeHandle(self: *MacOSWebView) ?*anyopaque {
         return self.handle;
+    }
+
+    pub fn setEventSink(self: *MacOSWebView, sink: webview_events.EventSink) void {
+        webview_events.setSinkForOwner(self.window_handle, sink);
     }
 
     fn createNativeWebView(self: *MacOSWebView, bounds: chrome.CGRect, hidden: bool) !Id {

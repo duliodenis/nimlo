@@ -100,6 +100,24 @@ const RenderedTabControl = struct {
     seen: bool = false,
 };
 
+const ChromeWindowState = struct {
+    window: Id,
+    address_field: Id = null,
+    bookmark_button: Id = null,
+    bookmark_menu_item: Id = null,
+    reload_button: Id = null,
+    tab_icon: Id = null,
+    tab_label: Id = null,
+    tab_container: Id = null,
+    tab_document_view: Id = null,
+    tab_new_button: Id = null,
+    tab_scroll_view: Id = null,
+    tab_target: Id = null,
+    webview_target: Id = null,
+    tab_snapshots: std.ArrayList(webview_events.TabSnapshot) = .empty,
+    rendered_tab_controls: std.ArrayList(RenderedTabControl) = .empty,
+};
+
 const NavigationDecisionHandler = extern struct {
     isa: ?*anyopaque,
     flags: c_int,
@@ -129,17 +147,97 @@ var current_drag_has_moved = false;
 var webview_chrome_states: std.ArrayList(WebViewChromeState) = .empty;
 var favicon_cache: std.ArrayList(CachedFavicon) = .empty;
 var rendered_tab_controls: std.ArrayList(RenderedTabControl) = .empty;
+var chrome_window_states: std.ArrayList(ChromeWindowState) = .empty;
+var active_chrome_window_state_index: ?usize = null;
 var webcrypto_master_key: [32]u8 = undefined;
 var webcrypto_master_key_initialized = false;
 var command_menus_installed = false;
 var local_directory_page_counter: usize = 0;
 
 pub fn install(window_handle: Id, content_view: Id, bounds: CGRect, webview: Id) !Id {
+    try beginChromeWindowInstall(window_handle);
     current_window = window_handle;
     installAddressBarTargetClass();
     const address_field = try addToolbar(content_view, bounds, webview);
+    saveActiveChromeWindowState();
     msg1(void, window_handle, sel("makeFirstResponder:"), address_field);
     return address_field;
+}
+
+fn beginChromeWindowInstall(window_handle: Id) !void {
+    saveActiveChromeWindowState();
+
+    try chrome_window_states.append(std.heap.page_allocator, .{
+        .window = window_handle,
+    });
+    active_chrome_window_state_index = chrome_window_states.items.len - 1;
+
+    current_address_field = null;
+    current_bookmark_button = null;
+    current_reload_button = null;
+    current_tab_icon = null;
+    current_tab_label = null;
+    current_tab_container = null;
+    current_tab_document_view = null;
+    current_tab_new_button = null;
+    current_tab_scroll_view = null;
+    current_tab_target = null;
+    current_webview_target = null;
+    current_tab_snapshots = .empty;
+    rendered_tab_controls = .empty;
+    resetCurrentTabDrag();
+}
+
+fn saveActiveChromeWindowState() void {
+    const index = active_chrome_window_state_index orelse return;
+    if (index >= chrome_window_states.items.len) return;
+
+    chrome_window_states.items[index] = .{
+        .window = current_window,
+        .address_field = current_address_field,
+        .bookmark_button = current_bookmark_button,
+        .bookmark_menu_item = current_bookmark_menu_item,
+        .reload_button = current_reload_button,
+        .tab_icon = current_tab_icon,
+        .tab_label = current_tab_label,
+        .tab_container = current_tab_container,
+        .tab_document_view = current_tab_document_view,
+        .tab_new_button = current_tab_new_button,
+        .tab_scroll_view = current_tab_scroll_view,
+        .tab_target = current_tab_target,
+        .webview_target = current_webview_target,
+        .tab_snapshots = current_tab_snapshots,
+        .rendered_tab_controls = rendered_tab_controls,
+    };
+}
+
+fn activateChromeWindowState(window_handle: Id) void {
+    saveActiveChromeWindowState();
+
+    for (chrome_window_states.items, 0..) |state, index| {
+        if (state.window != window_handle) continue;
+
+        active_chrome_window_state_index = index;
+        current_window = state.window;
+        current_address_field = state.address_field;
+        current_bookmark_button = state.bookmark_button;
+        current_bookmark_menu_item = state.bookmark_menu_item;
+        current_reload_button = state.reload_button;
+        current_tab_icon = state.tab_icon;
+        current_tab_label = state.tab_label;
+        current_tab_container = state.tab_container;
+        current_tab_document_view = state.tab_document_view;
+        current_tab_new_button = state.tab_new_button;
+        current_tab_scroll_view = state.tab_scroll_view;
+        current_tab_target = state.tab_target;
+        current_webview_target = state.webview_target;
+        current_tab_snapshots = state.tab_snapshots;
+        rendered_tab_controls = state.rendered_tab_controls;
+        resetCurrentTabDrag();
+        webview_events.activateSinkForOwner(window_handle);
+        webview_events.activateChromeSinkForOwner(window_handle);
+        return;
+    }
 }
 
 pub fn noteExternalLoad(webview: Id) void {
@@ -319,6 +417,8 @@ fn bundledAppIcon() Id {
 }
 
 fn addTitlebarTabStrip(window_handle: Id, target: Id) !void {
+    resetRenderedTitlebarTabState();
+
     const container_frame = CGRect{
         .origin = .{
             .x = 0,
@@ -341,7 +441,7 @@ fn addTitlebarTabStrip(window_handle: Id, target: Id) !void {
     current_tab_target = target;
     try installTitlebarTabScrollView(container);
     try renderTitlebarTabs(&.{});
-    webview_events.setChromeSink(.{
+    webview_events.setChromeSinkForOwner(window_handle, .{
         .context = target.?,
         .on_tabs_changed = handleTabsChanged,
         .on_app_close_requested = handleAppCloseRequested,
@@ -358,6 +458,15 @@ fn addTitlebarTabStrip(window_handle: Id, target: Id) !void {
     msg1(void, window_handle, sel("addTitlebarAccessoryViewController:"), controller);
 }
 
+fn resetRenderedTitlebarTabState() void {
+    rendered_tab_controls.clearRetainingCapacity();
+    current_tab_new_button = null;
+    current_tab_label = null;
+    current_tab_icon = null;
+    current_tab_snapshots.clearRetainingCapacity();
+    resetCurrentTabDrag();
+}
+
 fn installWindowResizeObserver(window_handle: Id, target: Id) void {
     const notification_center = msg0(Id, cls("NSNotificationCenter"), sel("defaultCenter"));
     if (notification_center == null) return;
@@ -369,6 +478,15 @@ fn installWindowResizeObserver(window_handle: Id, target: Id) void {
         target,
         sel("windowDidResize:"),
         nsString("NSWindowDidResizeNotification"),
+        window_handle,
+    );
+    msg4(
+        void,
+        notification_center,
+        sel("addObserver:selector:name:object:"),
+        target,
+        sel("windowDidBecomeKey:"),
+        nsString("NSWindowDidBecomeKeyNotification"),
         window_handle,
     );
 }
@@ -847,6 +965,7 @@ fn installCommandMenus(target: Id) void {
     const file_menu = msg0(Id, msg0(Id, cls("NSMenu"), sel("alloc")), sel("init"));
     const file_item = msg0(Id, msg0(Id, cls("NSMenuItem"), sel("alloc")), sel("init"));
     if (file_menu != null and file_item != null) {
+        addMenuItem(file_menu, "New Window", sel("newWindow:"), "n", NSEventModifierFlagCommand, target);
         addMenuItem(file_menu, "New Tab", sel("newTab:"), "t", NSEventModifierFlagCommand, target);
         addMenuItem(file_menu, "Close Tab", sel("closeActiveTab:"), "w", NSEventModifierFlagCommand, target);
         msg1(void, file_item, sel("setTitle:"), nsString("File"));
@@ -1013,6 +1132,12 @@ fn installAddressBarTargetClass() void {
     );
     _ = c.class_addMethod(
         target_class,
+        c.sel_registerName("newWindow:"),
+        @ptrCast(&newWindow),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
         c.sel_registerName("aboutNimlo:"),
         @ptrCast(&aboutNimlo),
         "v@:@",
@@ -1081,6 +1206,12 @@ fn installAddressBarTargetClass() void {
         target_class,
         c.sel_registerName("windowDidResize:"),
         @ptrCast(&windowDidResize),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("windowDidBecomeKey:"),
+        @ptrCast(&windowDidBecomeKey),
         "v@:@",
     );
     _ = c.class_addMethod(
@@ -1329,6 +1460,12 @@ fn newTab(target: Id, _: Sel, _: Id) callconv(.c) void {
     std.debug.print("new tab requested.\n", .{});
 }
 
+fn newWindow(target: Id, _: Sel, _: Id) callconv(.c) void {
+    _ = target;
+    webview_events.emitNewWindowRequested();
+    std.debug.print("new window requested.\n", .{});
+}
+
 fn aboutNimlo(target: Id, _: Sel, _: Id) callconv(.c) void {
     _ = target;
     webview_events.emitUrlOpenRequested("nimlo://about");
@@ -1424,6 +1561,12 @@ fn previousTab(_: Id, _: Sel, _: Id) callconv(.c) void {
 
 fn windowDidResize(_: Id, _: Sel, _: Id) callconv(.c) void {
     renderTitlebarTabs(current_tab_snapshots.items) catch return;
+}
+
+fn windowDidBecomeKey(_: Id, _: Sel, notification: Id) callconv(.c) void {
+    const window_handle = msg0(Id, notification, sel("object"));
+    if (window_handle == null) return;
+    activateChromeWindowState(window_handle);
 }
 
 fn reload(target: Id, _: Sel, _: Id) callconv(.c) void {

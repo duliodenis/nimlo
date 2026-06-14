@@ -68,6 +68,11 @@ pub const MacOSWindow = struct {
     }
 
     pub fn show(self: *MacOSWindow) !void {
+        try self.present();
+        try self.runEventLoop();
+    }
+
+    pub fn present(self: *MacOSWindow) !void {
         msg0(void, self.handle, sel("center"));
         msg1(void, self.handle, sel("makeKeyAndOrderFront:"), @as(Id, null));
         msg1(void, self.app, sel("activateIgnoringOtherApps:"), true);
@@ -77,7 +82,9 @@ pub const MacOSWindow = struct {
             self.width,
             self.height,
         });
+    }
 
+    pub fn runEventLoop(self: *MacOSWindow) !void {
         msg0(void, self.app, sel("run"));
     }
 

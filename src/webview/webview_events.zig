@@ -455,3 +455,89 @@ pub fn emitHistoryClearConfirmationRequested(source_handle: ?*anyopaque) void {
         }
     }
 }
+
+const TestSinkRecorder = struct {
+    event_count: usize = 0,
+    chrome_count: usize = 0,
+};
+
+fn countTestEventSink(context: *anyopaque) void {
+    const recorder: *TestSinkRecorder = @ptrCast(@alignCast(context));
+    recorder.event_count += 1;
+}
+
+fn countTestChromeSink(context: *anyopaque, _: []const TabSnapshot) void {
+    const recorder: *TestSinkRecorder = @ptrCast(@alignCast(context));
+    recorder.chrome_count += 1;
+}
+
+test "clearing active owner falls back to remaining owner sinks" {
+    defer clearSink();
+    defer clearChromeSink();
+
+    var owner_a: u8 = 0;
+    var owner_b: u8 = 0;
+    var recorder_a = TestSinkRecorder{};
+    var recorder_b = TestSinkRecorder{};
+
+    setSinkForOwner(&owner_a, .{
+        .context = &recorder_a,
+        .on_navigation = struct {
+            fn callback(_: *anyopaque, _: NavigationEvent) void {}
+        }.callback,
+        .on_new_tab_requested = countTestEventSink,
+    });
+    setChromeSinkForOwner(&owner_a, .{
+        .context = &recorder_a,
+        .on_tabs_changed = countTestChromeSink,
+    });
+    setSinkForOwner(&owner_b, .{
+        .context = &recorder_b,
+        .on_navigation = struct {
+            fn callback(_: *anyopaque, _: NavigationEvent) void {}
+        }.callback,
+        .on_new_tab_requested = countTestEventSink,
+    });
+    setChromeSinkForOwner(&owner_b, .{
+        .context = &recorder_b,
+        .on_tabs_changed = countTestChromeSink,
+    });
+
+    clearSinkForOwner(&owner_b);
+    clearChromeSinkForOwner(&owner_b);
+    emitNewTabRequested();
+    emitTabsChanged(&.{});
+
+    try std.testing.expectEqual(@as(usize, 1), recorder_a.event_count);
+    try std.testing.expectEqual(@as(usize, 1), recorder_a.chrome_count);
+    try std.testing.expectEqual(@as(usize, 0), recorder_b.event_count);
+    try std.testing.expectEqual(@as(usize, 0), recorder_b.chrome_count);
+}
+
+test "clearing final owner stops event and chrome routing" {
+    defer clearSink();
+    defer clearChromeSink();
+
+    var owner: u8 = 0;
+    var recorder = TestSinkRecorder{};
+
+    setSinkForOwner(&owner, .{
+        .context = &recorder,
+        .on_navigation = struct {
+            fn callback(_: *anyopaque, _: NavigationEvent) void {}
+        }.callback,
+        .on_new_tab_requested = countTestEventSink,
+    });
+    setChromeSinkForOwner(&owner, .{
+        .context = &recorder,
+        .on_tabs_changed = countTestChromeSink,
+    });
+
+    clearSinkForOwner(&owner);
+    clearChromeSinkForOwner(&owner);
+    emitNewTabRequested();
+    emitTabsChanged(&.{});
+
+    try std.testing.expectEqual(@as(usize, 0), recorder.event_count);
+    try std.testing.expectEqual(@as(usize, 0), recorder.chrome_count);
+}

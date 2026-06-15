@@ -51,6 +51,7 @@ const min_titlebar_tab_strip_width: CGFloat = 320;
 const titlebar_window_margin: CGFloat = 118;
 const titlebar_new_tab_button_size: CGFloat = 28;
 const titlebar_new_tab_button_gap: CGFloat = 4;
+const tab_reorder_animation_duration: CGFloat = 0.14;
 
 const NSButtonTypeMomentaryChange: usize = 5;
 const NSModalResponseSecondButtonReturn: isize = 1001;
@@ -98,6 +99,7 @@ const RenderedTabControl = struct {
     button: Id,
     close_button: Id,
     seen: bool = false,
+    is_new: bool = false,
 };
 
 const ChromeWindowState = struct {
@@ -592,12 +594,16 @@ fn renderTitlebarTabs(tabs: []const webview_events.TabSnapshot) !void {
     var active_button: Id = null;
     const tab_count = tabs.len;
     const tab_slot_width = tabWidthForCount(tab_count, titlebarTabAreaWidth(container));
+    const animate_reorder = current_drag_has_moved;
+    if (animate_reorder) beginTabReorderAnimation();
+    defer if (animate_reorder) endTabReorderAnimation();
 
     for (tabs) |tab| {
         const width = tab_slot_width;
         const control = try ensureRenderedTabControl(document_view, target, tab);
-        updateTitlebarTabButton(control.button, tab, x, width);
-        updateTitlebarTabCloseButton(control.close_button, tab, x, width);
+        const animate_control = animate_reorder and !control.is_new;
+        updateTitlebarTabButton(control.button, tab, x, width, animate_control);
+        updateTitlebarTabCloseButton(control.close_button, tab, x, width, animate_control);
         if (tab.is_active) {
             active_button = control.button;
         }
@@ -612,8 +618,8 @@ fn renderTitlebarTabs(tabs: []const webview_events.TabSnapshot) !void {
             .is_active = true,
         };
         const control = try ensureRenderedTabControl(document_view, target, fallback);
-        updateTitlebarTabButton(control.button, fallback, x, tab_width);
-        updateTitlebarTabCloseButton(control.close_button, fallback, x, tab_width);
+        updateTitlebarTabButton(control.button, fallback, x, tab_width, false);
+        updateTitlebarTabCloseButton(control.close_button, fallback, x, tab_width, false);
         active_button = control.button;
         x += tab_width + titlebar_new_tab_button_gap;
     }
@@ -629,6 +635,7 @@ fn ensureRenderedTabControl(container: Id, target: Id, tab: webview_events.TabSn
     for (rendered_tab_controls.items) |*control| {
         if (control.id == tab.id) {
             control.seen = true;
+            control.is_new = false;
             return control;
         }
     }
@@ -640,6 +647,7 @@ fn ensureRenderedTabControl(container: Id, target: Id, tab: webview_events.TabSn
         .button = button,
         .close_button = close_button,
         .seen = true,
+        .is_new = true,
     });
     return &rendered_tab_controls.items[rendered_tab_controls.items.len - 1];
 }
@@ -692,14 +700,14 @@ fn addTitlebarTabButton(container: Id, target: Id, tab: webview_events.TabSnapsh
     return button;
 }
 
-fn updateTitlebarTabButton(button: Id, tab: webview_events.TabSnapshot, x: CGFloat, width: CGFloat) void {
+fn updateTitlebarTabButton(button: Id, tab: webview_events.TabSnapshot, x: CGFloat, width: CGFloat, animate: bool) void {
     const frame = CGRect{
         .origin = .{ .x = x, .y = (tab_strip_height - tab_height) / 2 },
         .size = .{ .width = width, .height = tab_height },
     };
 
     const title = tabDisplayTitle(tab.title, width) catch "Nimlo";
-    msg1(void, button, sel("setFrame:"), frame);
+    setViewFrame(button, frame, animate);
     msg1(void, button, sel("setTitle:"), nsString(title));
     msg1(void, button, sel("setToolTip:"), nsString(std.heap.page_allocator.dupeZ(u8, tab.title) catch "Nimlo"));
     msg1(void, button, sel("setImage:"), tabImage(tab));
@@ -742,7 +750,7 @@ fn addTitlebarTabCloseButton(
     return button;
 }
 
-fn updateTitlebarTabCloseButton(button: Id, tab: webview_events.TabSnapshot, x: CGFloat, width: CGFloat) void {
+fn updateTitlebarTabCloseButton(button: Id, tab: webview_events.TabSnapshot, x: CGFloat, width: CGFloat, animate: bool) void {
     const frame = CGRect{
         .origin = .{
             .x = x + width - tab_close_button_size - tab_close_button_margin,
@@ -751,8 +759,33 @@ fn updateTitlebarTabCloseButton(button: Id, tab: webview_events.TabSnapshot, x: 
         .size = .{ .width = tab_close_button_size, .height = tab_close_button_size },
     };
 
-    msg1(void, button, sel("setFrame:"), frame);
+    setViewFrame(button, frame, animate);
     msg1(void, button, sel("setTag:"), @as(isize, @intCast(tab.id)));
+}
+
+fn beginTabReorderAnimation() void {
+    msg0(void, cls("NSAnimationContext"), sel("beginGrouping"));
+    const context = msg0(Id, cls("NSAnimationContext"), sel("currentContext"));
+    if (context == null) return;
+
+    msg1(void, context, sel("setDuration:"), tab_reorder_animation_duration);
+    msg1(void, context, sel("setAllowsImplicitAnimation:"), true);
+}
+
+fn endTabReorderAnimation() void {
+    msg0(void, cls("NSAnimationContext"), sel("endGrouping"));
+}
+
+fn setViewFrame(view: Id, frame: CGRect, animate: bool) void {
+    if (animate) {
+        const animator = msg0(Id, view, sel("animator"));
+        if (animator != null) {
+            msg1(void, animator, sel("setFrame:"), frame);
+            return;
+        }
+    }
+
+    msg1(void, view, sel("setFrame:"), frame);
 }
 
 fn tabDisplayTitle(title: []const u8, width: CGFloat) ![:0]const u8 {

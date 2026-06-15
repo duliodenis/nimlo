@@ -1030,6 +1030,7 @@ fn installCommandMenus(target: Id) void {
         addMenuItem(file_menu, "New Window", sel("newWindow:"), "n", NSEventModifierFlagCommand, target);
         addMenuItem(file_menu, "New Tab", sel("newTab:"), "t", NSEventModifierFlagCommand, target);
         addMenuItem(file_menu, "Detach Tab", sel("detachTab:"), "", 0, target);
+        addMenuItem(file_menu, "Move Tab to Newest Window", sel("moveTabToNewestWindow:"), "", 0, target);
         addMenuItem(file_menu, "Close Tab", sel("closeActiveTab:"), "w", NSEventModifierFlagCommand, target);
         msg1(void, file_item, sel("setTitle:"), nsString("File"));
         msg1(void, file_item, sel("setSubmenu:"), file_menu);
@@ -1245,6 +1246,12 @@ fn installAddressBarTargetClass() void {
         target_class,
         c.sel_registerName("detachTab:"),
         @ptrCast(&detachTab),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("moveTabToNewestWindow:"),
+        @ptrCast(&moveTabToNewestWindow),
         "v@:@",
     );
     _ = c.class_addMethod(
@@ -1516,6 +1523,8 @@ fn goBack(target: Id, _: Sel, sender: Id) callconv(.c) void {
     const webview = activeTargetWebView(target) orelse return;
     if (msg0(bool, webview, sel("canGoBack"))) {
         _ = msg0(Id, webview, sel("goBack"));
+    } else {
+        webview_events.emitActiveTabBackRequested();
     }
 }
 
@@ -1524,6 +1533,8 @@ fn goForward(target: Id, _: Sel, sender: Id) callconv(.c) void {
     const webview = activeTargetWebView(target) orelse return;
     if (msg0(bool, webview, sel("canGoForward"))) {
         _ = msg0(Id, webview, sel("goForward"));
+    } else {
+        webview_events.emitActiveTabForwardRequested();
     }
 }
 
@@ -1622,6 +1633,11 @@ fn closeTab(_: Id, _: Sel, sender: Id) callconv(.c) void {
 fn detachTab(_: Id, _: Sel, sender: Id) callconv(.c) void {
     activateChromeWindowStateForSender(sender);
     webview_events.emitActiveTabDetachRequested();
+}
+
+fn moveTabToNewestWindow(_: Id, _: Sel, sender: Id) callconv(.c) void {
+    activateChromeWindowStateForSender(sender);
+    webview_events.emitActiveTabMoveToExistingWindowRequested();
 }
 
 fn closeActiveTab(_: Id, _: Sel, sender: Id) callconv(.c) void {

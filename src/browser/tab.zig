@@ -18,6 +18,8 @@ pub const NavigationState = struct {
 };
 
 pub const Tab = struct {
+    pub const max_history_entries = 32;
+
     id: TabId,
     title: []const u8,
     current_url: []const u8,
@@ -27,8 +29,14 @@ pub const Tab = struct {
     can_go_forward: bool,
     is_private: bool,
     webview_handle: ?*anyopaque,
+    history_urls: [max_history_entries][]const u8,
+    history_len: usize,
+    history_index: usize,
 
     pub fn init(id: TabId, start_url: []const u8, is_private: bool) Tab {
+        var history_urls: [max_history_entries][]const u8 = undefined;
+        history_urls[0] = start_url;
+
         return .{
             .id = id,
             .title = initialTitle(start_url),
@@ -39,6 +47,9 @@ pub const Tab = struct {
             .can_go_forward = false,
             .is_private = is_private,
             .webview_handle = null,
+            .history_urls = history_urls,
+            .history_len = 1,
+            .history_index = 0,
         };
     }
 
@@ -65,6 +76,54 @@ pub const Tab = struct {
 
     pub fn attachWebView(self: *Tab, handle: ?*anyopaque) void {
         self.webview_handle = handle;
+    }
+
+    pub fn recordHistoryUrl(self: *Tab, url: []const u8) void {
+        if (self.history_len > 0 and self.history_index < self.history_len) {
+            if (std.mem.eql(u8, self.history_urls[self.history_index], url)) {
+                self.setModelHistoryCapabilities();
+                return;
+            }
+        }
+
+        if (self.history_index + 1 < self.history_len) {
+            self.history_len = self.history_index + 1;
+        }
+
+        if (self.history_len == max_history_entries) {
+            std.mem.copyForwards([]const u8, self.history_urls[0 .. max_history_entries - 1], self.history_urls[1..max_history_entries]);
+            self.history_len -= 1;
+            if (self.history_index > 0) self.history_index -= 1;
+        }
+
+        self.history_urls[self.history_len] = url;
+        self.history_len += 1;
+        self.history_index = self.history_len - 1;
+        self.setModelHistoryCapabilities();
+    }
+
+    pub fn historyBackUrl(self: *Tab) ?[]const u8 {
+        if (self.history_index == 0) return null;
+        self.history_index -= 1;
+        self.setModelHistoryCapabilities();
+        return self.history_urls[self.history_index];
+    }
+
+    pub fn historyForwardUrl(self: *Tab) ?[]const u8 {
+        if (self.history_index + 1 >= self.history_len) return null;
+        self.history_index += 1;
+        self.setModelHistoryCapabilities();
+        return self.history_urls[self.history_index];
+    }
+
+    pub fn updateHistoryCapabilities(self: *Tab) void {
+        self.can_go_back = self.can_go_back or self.history_index > 0;
+        self.can_go_forward = self.can_go_forward or self.history_index + 1 < self.history_len;
+    }
+
+    fn setModelHistoryCapabilities(self: *Tab) void {
+        self.can_go_back = self.history_index > 0;
+        self.can_go_forward = self.history_index + 1 < self.history_len;
     }
 };
 
@@ -183,4 +242,35 @@ test "loading helpers update state" {
 
     tab.setIdle();
     try std.testing.expectEqual(LoadingState.idle, tab.loading_state);
+}
+
+test "tab records compact back and forward history" {
+    var tab = Tab.init(10, "nimlo://start", false);
+
+    tab.recordHistoryUrl("https://example.com");
+    tab.recordHistoryUrl("https://ziglang.org");
+
+    try std.testing.expect(tab.can_go_back);
+    try std.testing.expect(!tab.can_go_forward);
+    try std.testing.expectEqualStrings("https://example.com", tab.historyBackUrl().?);
+    try std.testing.expect(tab.can_go_back);
+    try std.testing.expect(tab.can_go_forward);
+    try std.testing.expectEqualStrings("nimlo://start", tab.historyBackUrl().?);
+    try std.testing.expect(!tab.can_go_back);
+    try std.testing.expect(tab.can_go_forward);
+    try std.testing.expectEqualStrings("https://example.com", tab.historyForwardUrl().?);
+}
+
+test "tab history truncates forward entries after new navigation" {
+    var tab = Tab.init(11, "nimlo://start", false);
+
+    tab.recordHistoryUrl("https://example.com");
+    tab.recordHistoryUrl("https://ziglang.org");
+    _ = tab.historyBackUrl();
+    tab.recordHistoryUrl("https://news.example");
+
+    try std.testing.expectEqual(@as(usize, 3), tab.history_len);
+    try std.testing.expectEqual(@as(usize, 2), tab.history_index);
+    try std.testing.expectEqualStrings("https://news.example", tab.history_urls[2]);
+    try std.testing.expect(!tab.can_go_forward);
 }

@@ -74,14 +74,18 @@ pub const MacOSWindow = struct {
 
     pub fn present(self: *MacOSWindow) !void {
         msg0(void, self.handle, sel("center"));
-        msg1(void, self.handle, sel("makeKeyAndOrderFront:"), @as(Id, null));
-        msg1(void, self.app, sel("activateIgnoringOtherApps:"), true);
+        try self.focus();
 
         std.debug.print("macOS window ready: {s} ({d}x{d})\n", .{
             self.title,
             self.width,
             self.height,
         });
+    }
+
+    pub fn focus(self: *MacOSWindow) !void {
+        msg1(void, self.handle, sel("makeKeyAndOrderFront:"), @as(Id, null));
+        msg1(void, self.app, sel("activateIgnoringOtherApps:"), true);
     }
 
     pub fn runEventLoop(self: *MacOSWindow) !void {

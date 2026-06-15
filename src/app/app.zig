@@ -1,5 +1,6 @@
 const std = @import("std");
 const browser = @import("../browser/browser.zig");
+const tab_model = @import("../browser/tab.zig");
 const preferences = @import("../storage/preferences.zig");
 const private_mode = @import("../privacy/private_mode.zig");
 const about_page = @import("../ui/about_page.zig");
@@ -17,6 +18,8 @@ pub fn run() !void {
         .on_new_window_requested = handleNewWindowRequested,
         .on_window_closed = handleWindowClosed,
         .on_tab_detached = handleTabDetached,
+        .on_tab_move_target_available = handleTabMoveTargetAvailable,
+        .on_tab_moved_to_existing_window = handleTabMovedToExistingWindow,
     });
     defer webview_events.clearAppSink();
 
@@ -120,6 +123,17 @@ const AppController = struct {
             return;
         }
     }
+
+    fn newestOtherSession(self: *AppController, source_context: *anyopaque) ?*BrowserWindowSession {
+        var index = self.sessions.items.len;
+        while (index > 0) {
+            index -= 1;
+            const session = self.sessions.items[index];
+            if (@as(*anyopaque, @ptrCast(&session.core)) == source_context) continue;
+            return session;
+        }
+        return null;
+    }
 };
 
 const BrowserWindowSession = struct {
@@ -146,6 +160,23 @@ fn handleTabDetached(context: *anyopaque, tab: webview_events.DetachedTab) void 
     };
 }
 
+fn handleTabMoveTargetAvailable(context: *anyopaque, source_context: *anyopaque) bool {
+    const controller: *AppController = @ptrCast(@alignCast(context));
+    return controller.newestOtherSession(source_context) != null;
+}
+
+fn handleTabMovedToExistingWindow(context: *anyopaque, request: webview_events.TabMoveRequest) void {
+    const controller: *AppController = @ptrCast(@alignCast(context));
+    const destination = controller.newestOtherSession(request.source_context) orelse return;
+
+    destination.window.focus() catch |err| {
+        std.debug.print("destination window focus failed: {s}\n", .{@errorName(err)});
+    };
+    destination.core.addMovedTab(request.tab) catch |err| {
+        std.debug.print("move tab to window failed: {s}\n", .{@errorName(err)});
+    };
+}
+
 fn handleWindowClosed(context: *anyopaque, window_handle: ?*anyopaque) void {
     const controller: *AppController = @ptrCast(@alignCast(context));
     controller.removeWindow(window_handle);
@@ -159,6 +190,15 @@ fn seedInitialTab(core: *browser.Browser, tab: webview_events.DetachedTab) !void
     const initial = core.tabs.findTab(id) orelse return;
     initial.title = if (title.len == 0) initial.title else title;
     initial.favicon_url = favicon_url;
+    const history_count = @min(tab.history_len, tab_model.Tab.max_history_entries);
+    if (history_count > 0) {
+        for (0..history_count) |index| {
+            initial.history_urls[index] = tab.history_urls[index];
+        }
+        initial.history_len = history_count;
+        initial.history_index = @min(tab.history_index, history_count - 1);
+        initial.updateHistoryCapabilities();
+    }
 }
 
 fn loadInitialUrl(engine: *webview.WebViewAdapter, url: []const u8) !void {

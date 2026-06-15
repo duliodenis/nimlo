@@ -28,6 +28,10 @@ pub const StubWindow = struct {
         // TODO(app shell): add a platform window implementation for this OS.
     }
 
+    pub fn focus(self: *StubWindow) !void {
+        _ = self;
+    }
+
     pub fn runEventLoop(self: *StubWindow) !void {
         _ = self;
     }

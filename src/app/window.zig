@@ -24,6 +24,10 @@ pub const AppWindow = struct {
         try self.platform.present();
     }
 
+    pub fn focus(self: *AppWindow) !void {
+        try self.platform.focus();
+    }
+
     pub fn runEventLoop(self: *AppWindow) !void {
         try self.platform.runEventLoop();
     }

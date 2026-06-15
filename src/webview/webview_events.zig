@@ -25,10 +25,20 @@ pub const TabSnapshot = struct {
 };
 
 pub const DetachedTab = struct {
+    pub const max_history_entries = 32;
+
     title: []const u8,
     url: []const u8,
     favicon_url: []const u8 = "",
     is_private: bool = false,
+    history_urls: [max_history_entries][]const u8 = undefined,
+    history_len: usize = 0,
+    history_index: usize = 0,
+};
+
+pub const TabMoveRequest = struct {
+    source_context: *anyopaque,
+    tab: DetachedTab,
 };
 
 pub const EventSink = struct {
@@ -50,6 +60,9 @@ pub const EventSink = struct {
     on_tab_closed_requested: ?*const fn (context: *anyopaque, tab_id: u64) void = null,
     on_tab_reordered_requested: ?*const fn (context: *anyopaque, from_index: usize, to_index: usize) void = null,
     on_active_tab_detach_requested: ?*const fn (context: *anyopaque) void = null,
+    on_active_tab_move_to_existing_window_requested: ?*const fn (context: *anyopaque) void = null,
+    on_active_tab_back_requested: ?*const fn (context: *anyopaque) void = null,
+    on_active_tab_forward_requested: ?*const fn (context: *anyopaque) void = null,
 };
 
 pub const ChromeSink = struct {
@@ -66,6 +79,8 @@ pub const AppSink = struct {
     on_new_window_requested: ?*const fn (context: *anyopaque) void = null,
     on_window_closed: ?*const fn (context: *anyopaque, window_handle: ?*anyopaque) void = null,
     on_tab_detached: ?*const fn (context: *anyopaque, tab: DetachedTab) void = null,
+    on_tab_move_target_available: ?*const fn (context: *anyopaque, source_context: *anyopaque) bool = null,
+    on_tab_moved_to_existing_window: ?*const fn (context: *anyopaque, request: TabMoveRequest) void = null,
 };
 
 var current_sink: ?EventSink = null;
@@ -242,6 +257,30 @@ pub fn emitActiveTabDetachRequested() void {
     }
 }
 
+pub fn emitActiveTabMoveToExistingWindowRequested() void {
+    if (current_sink) |sink| {
+        if (sink.on_active_tab_move_to_existing_window_requested) |callback| {
+            callback(sink.context);
+        }
+    }
+}
+
+pub fn emitActiveTabBackRequested() void {
+    if (current_sink) |sink| {
+        if (sink.on_active_tab_back_requested) |callback| {
+            callback(sink.context);
+        }
+    }
+}
+
+pub fn emitActiveTabForwardRequested() void {
+    if (current_sink) |sink| {
+        if (sink.on_active_tab_forward_requested) |callback| {
+            callback(sink.context);
+        }
+    }
+}
+
 pub fn emitTabsChanged(tabs: []const TabSnapshot) void {
     if (current_chrome_sink) |sink| {
         sink.on_tabs_changed(sink.context, tabs);
@@ -292,6 +331,23 @@ pub fn emitTabDetached(tab: DetachedTab) void {
     if (current_app_sink) |sink| {
         if (sink.on_tab_detached) |callback| {
             callback(sink.context, tab);
+        }
+    }
+}
+
+pub fn emitTabMoveTargetAvailable(source_context: *anyopaque) bool {
+    if (current_app_sink) |sink| {
+        if (sink.on_tab_move_target_available) |callback| {
+            return callback(sink.context, source_context);
+        }
+    }
+    return false;
+}
+
+pub fn emitTabMovedToExistingWindow(request: TabMoveRequest) void {
+    if (current_app_sink) |sink| {
+        if (sink.on_tab_moved_to_existing_window) |callback| {
+            callback(sink.context, request);
         }
     }
 }

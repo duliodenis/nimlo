@@ -145,6 +145,13 @@ const AppController = struct {
         }
         return null;
     }
+
+    fn sessionForBrowserContext(self: *AppController, browser_context: *anyopaque) ?*BrowserWindowSession {
+        for (self.sessions.items) |session| {
+            if (@as(*anyopaque, @ptrCast(&session.core)) == browser_context) return session;
+        }
+        return null;
+    }
 };
 
 const BrowserWindowSession = struct {
@@ -179,13 +186,22 @@ fn handleTabMoveTargetAvailable(context: *anyopaque, source_context: *anyopaque,
 fn handleTabMovedToExistingWindow(context: *anyopaque, request: webview_events.TabMoveRequest) void {
     const controller: *AppController = @ptrCast(@alignCast(context));
     const destination = controller.sessionForMoveDestination(request.source_context, request.destination_window_handle) orelse return;
+    const source = controller.sessionForBrowserContext(request.source_context);
 
     destination.window.focus() catch |err| {
         std.debug.print("destination window focus failed: {s}\n", .{@errorName(err)});
     };
+    webview_events.activateSinkForOwner(destination.window.nativeHandle());
+    webview_events.activateChromeSinkForOwner(destination.window.nativeHandle());
     destination.core.addMovedTabAt(request.tab, request.insertion_index) catch |err| {
         std.debug.print("move tab to window failed: {s}\n", .{@errorName(err)});
+        return;
     };
+    if (source) |source_session| {
+        if (source_session.core.tabs.len() == 0) {
+            source_session.window.close();
+        }
+    }
 }
 
 fn handleWindowClosed(context: *anyopaque, window_handle: ?*anyopaque) void {

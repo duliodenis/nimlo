@@ -28,6 +28,10 @@ pub const AppWindow = struct {
         try self.platform.focus();
     }
 
+    pub fn close(self: *AppWindow) void {
+        self.platform.close();
+    }
+
     pub fn runEventLoop(self: *AppWindow) !void {
         try self.platform.runEventLoop();
     }

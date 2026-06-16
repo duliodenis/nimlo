@@ -52,6 +52,8 @@ const titlebar_window_margin: CGFloat = 118;
 const titlebar_new_tab_button_size: CGFloat = 28;
 const titlebar_new_tab_button_gap: CGFloat = 4;
 const tab_reorder_animation_duration: CGFloat = 0.14;
+const tab_drop_indicator_width: CGFloat = 3;
+const tab_drop_indicator_height: CGFloat = 24;
 
 const NSButtonTypeMomentaryChange: usize = 5;
 const NSModalResponseSecondButtonReturn: isize = 1001;
@@ -112,6 +114,7 @@ const ChromeWindowState = struct {
     tab_label: Id = null,
     tab_container: Id = null,
     tab_document_view: Id = null,
+    tab_drop_indicator: Id = null,
     tab_new_button: Id = null,
     tab_scroll_view: Id = null,
     tab_target: Id = null,
@@ -136,6 +139,7 @@ var current_tab_icon: Id = null;
 var current_tab_label: Id = null;
 var current_tab_container: Id = null;
 var current_tab_document_view: Id = null;
+var current_tab_drop_indicator: Id = null;
 var current_tab_new_button: Id = null;
 var current_tab_scroll_view: Id = null;
 var current_tab_target: Id = null;
@@ -184,6 +188,7 @@ fn beginChromeWindowInstall(window_handle: Id) !void {
     current_tab_label = null;
     current_tab_container = null;
     current_tab_document_view = null;
+    current_tab_drop_indicator = null;
     current_tab_new_button = null;
     current_tab_scroll_view = null;
     current_tab_target = null;
@@ -207,6 +212,7 @@ fn saveActiveChromeWindowState() void {
         .tab_label = current_tab_label,
         .tab_container = current_tab_container,
         .tab_document_view = current_tab_document_view,
+        .tab_drop_indicator = current_tab_drop_indicator,
         .tab_new_button = current_tab_new_button,
         .tab_scroll_view = current_tab_scroll_view,
         .tab_target = current_tab_target,
@@ -232,6 +238,7 @@ fn activateChromeWindowState(window_handle: Id) void {
         current_tab_label = state.tab_label;
         current_tab_container = state.tab_container;
         current_tab_document_view = state.tab_document_view;
+        current_tab_drop_indicator = state.tab_drop_indicator;
         current_tab_new_button = state.tab_new_button;
         current_tab_scroll_view = state.tab_scroll_view;
         current_tab_target = state.tab_target;
@@ -273,6 +280,7 @@ fn removeChromeWindowState(window_handle: Id) void {
         current_tab_label = null;
         current_tab_container = null;
         current_tab_document_view = null;
+        current_tab_drop_indicator = null;
         current_tab_new_button = null;
         current_tab_scroll_view = null;
         current_tab_target = null;
@@ -512,6 +520,7 @@ fn resetRenderedTitlebarTabState() void {
     current_tab_new_button = null;
     current_tab_label = null;
     current_tab_icon = null;
+    current_tab_drop_indicator = null;
     current_tab_snapshots.clearRetainingCapacity();
     resetCurrentTabDrag();
 }
@@ -1426,6 +1435,7 @@ fn tabButtonMouseDown(button: Id, _: Sel, event: Id) callconv(.c) void {
     current_drag_source_window = current_window;
     current_drag_destination_window = null;
     current_drag_destination_index = null;
+    hideAllTabDropIndicators();
 }
 
 fn tabButtonMouseDragged(_: Id, _: Sel, event: Id) callconv(.c) void {
@@ -1439,11 +1449,13 @@ fn tabButtonMouseDragged(_: Id, _: Sel, event: Id) callconv(.c) void {
     if (tabDropTargetForEvent(event)) |target| {
         current_drag_destination_window = target.window;
         current_drag_destination_index = target.insertion_index;
+        showTabDropIndicator(target);
         return;
     }
 
     current_drag_destination_window = null;
     current_drag_destination_index = null;
+    hideAllTabDropIndicators();
 
     const to_index = tabIndexAtDocumentX(point.x) orelse return;
     if (from_index == to_index) return;
@@ -1477,6 +1489,7 @@ fn resetCurrentTabDrag() void {
     current_drag_source_window = null;
     current_drag_destination_window = null;
     current_drag_destination_index = null;
+    hideAllTabDropIndicators();
 }
 
 fn tabIdFromSender(sender: Id) ?u64 {
@@ -1539,6 +1552,97 @@ fn tabDropTargetForEvent(event: Id) ?TabDropTarget {
         };
     }
 
+    return null;
+}
+
+fn showTabDropIndicator(target: TabDropTarget) void {
+    hideTabDropIndicatorsExcept(target.window);
+
+    const state = chromeWindowStateForWindow(target.window) orelse return;
+    const indicator = ensureTabDropIndicator(state) orelse return;
+    const x = dropIndicatorX(state, target.insertion_index);
+
+    msg1(void, indicator, sel("setFrame:"), CGRect{
+        .origin = .{
+            .x = x,
+            .y = (tab_strip_height - tab_drop_indicator_height) / 2,
+        },
+        .size = .{
+            .width = tab_drop_indicator_width,
+            .height = tab_drop_indicator_height,
+        },
+    });
+    msg1(void, indicator, sel("setHidden:"), false);
+}
+
+fn ensureTabDropIndicator(state: *ChromeWindowState) Id {
+    if (state.tab_drop_indicator) |indicator| return indicator;
+
+    const document_view = state.tab_document_view orelse return null;
+    const indicator = msg1(
+        Id,
+        msg0(Id, cls("NSView"), sel("alloc")),
+        sel("initWithFrame:"),
+        CGRect{
+            .origin = .{ .x = 0, .y = (tab_strip_height - tab_drop_indicator_height) / 2 },
+            .size = .{ .width = tab_drop_indicator_width, .height = tab_drop_indicator_height },
+        },
+    );
+    if (indicator == null) return null;
+
+    msg1(void, indicator, sel("setWantsLayer:"), true);
+    if (msg0(Id, indicator, sel("layer"))) |layer| {
+        const color = msg0(Id, cls("NSColor"), sel("systemBlueColor"));
+        if (color != null) {
+            msg1(void, layer, sel("setBackgroundColor:"), msg0(Id, color, sel("CGColor")));
+        }
+        msg1(void, layer, sel("setCornerRadius:"), tab_drop_indicator_width / 2);
+    }
+    msg1(void, indicator, sel("setHidden:"), true);
+    msg1(void, document_view, sel("addSubview:"), indicator);
+
+    state.tab_drop_indicator = indicator;
+    if (state.window == current_window) current_tab_drop_indicator = indicator;
+    return indicator;
+}
+
+fn dropIndicatorX(state: *const ChromeWindowState, insertion_index: usize) CGFloat {
+    const container = state.tab_container orelse return 0;
+    const tab_count = state.tab_snapshots.items.len;
+    const area_width = titlebarTabAreaWidth(container);
+    if (tab_count == 0) return 0;
+
+    const slot_width = tabWidthForCount(tab_count, area_width);
+    const stride = slot_width + titlebar_new_tab_button_gap;
+    const raw_x = if (insertion_index == 0)
+        @as(CGFloat, 0)
+    else
+        (@as(CGFloat, @floatFromInt(insertion_index)) * stride) - (titlebar_new_tab_button_gap / 2) - (tab_drop_indicator_width / 2);
+
+    return std.math.clamp(raw_x, 0, @max(@as(CGFloat, 0), area_width - tab_drop_indicator_width));
+}
+
+fn hideAllTabDropIndicators() void {
+    hideTabDropIndicatorsExcept(null);
+}
+
+fn hideTabDropIndicatorsExcept(visible_window: Id) void {
+    if (current_tab_drop_indicator != null and current_window != visible_window) {
+        msg1(void, current_tab_drop_indicator, sel("setHidden:"), true);
+    }
+
+    for (chrome_window_states.items) |state| {
+        if (state.window == visible_window) continue;
+        if (state.tab_drop_indicator) |indicator| {
+            msg1(void, indicator, sel("setHidden:"), true);
+        }
+    }
+}
+
+fn chromeWindowStateForWindow(window_handle: Id) ?*ChromeWindowState {
+    for (chrome_window_states.items) |*state| {
+        if (state.window == window_handle) return state;
+    }
     return null;
 }
 

@@ -32,6 +32,10 @@ pub const StubWindow = struct {
         _ = self;
     }
 
+    pub fn close(self: *StubWindow) void {
+        _ = self;
+    }
+
     pub fn runEventLoop(self: *StubWindow) !void {
         _ = self;
     }

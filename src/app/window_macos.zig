@@ -88,6 +88,10 @@ pub const MacOSWindow = struct {
         msg1(void, self.app, sel("activateIgnoringOtherApps:"), true);
     }
 
+    pub fn close(self: *MacOSWindow) void {
+        msg0(void, self.handle, sel("close"));
+    }
+
     pub fn runEventLoop(self: *MacOSWindow) !void {
         msg0(void, self.app, sel("run"));
     }

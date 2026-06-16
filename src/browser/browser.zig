@@ -490,7 +490,7 @@ pub const Browser = struct {
     fn moveTabToWindow(self: *Browser, tab_id: u64, destination_window_handle: ?*anyopaque, insertion_index: ?usize) void {
         if (!webview_events.emitTabMoveTargetAvailable(self, destination_window_handle)) return;
 
-        const detached = self.detachTabForWindowTransfer(tab_id) orelse return;
+        const detached = self.detachTabForWindowTransfer(tab_id, true) orelse return;
         webview_events.emitTabMovedToExistingWindow(.{
             .source_context = self,
             .destination_window_handle = destination_window_handle,
@@ -511,11 +511,11 @@ pub const Browser = struct {
 
     fn detachActiveTabForWindowTransfer(self: *Browser) ?tab_model.Tab {
         const active_id = self.tabs.active_tab_id orelse return null;
-        return self.detachTabForWindowTransfer(active_id);
+        return self.detachTabForWindowTransfer(active_id, false);
     }
 
-    fn detachTabForWindowTransfer(self: *Browser, tab_id: tab_model.TabId) ?tab_model.Tab {
-        if (self.tabs.len() <= 1) return null;
+    fn detachTabForWindowTransfer(self: *Browser, tab_id: tab_model.TabId, allow_final_tab: bool) ?tab_model.Tab {
+        if (self.tabs.len() <= 1 and !allow_final_tab) return null;
 
         const detached = self.tabs.detachTab(tab_id) orelse return null;
         self.webview_adapter.destroyWebView(detached.webview_handle);
@@ -1894,6 +1894,41 @@ test "targeted tab move command removes requested inactive tab and reports desti
     try std.testing.expectEqual(@as(?usize, 1), recorder.insertion_index);
     try std.testing.expectEqualStrings("Example", recorder.title);
     try std.testing.expectEqualStrings("https://example.com", recorder.url);
+}
+
+test "targeted tab move command can move final source tab" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    var recorder = MovedTabRecorder{ .target_available = true };
+    webview_events.setAppSink(.{
+        .context = &recorder,
+        .on_tab_move_target_available = recordTabMoveTargetAvailable,
+        .on_tab_moved_to_existing_window = recordMovedTab,
+    });
+    defer webview_events.clearAppSink();
+
+    try browser.start();
+    const only = browser.tabs.active_tab_id.?;
+    browser.tabs.findTab(only).?.current_url = "https://cnn.example";
+    browser.tabs.findTab(only).?.title = "CNN";
+    const destination_window_handle: ?*anyopaque = @ptrFromInt(0x3);
+
+    webview_events.emitTabMoveToWindowRequested(only, destination_window_handle, 0);
+
+    try std.testing.expectEqual(@as(usize, 1), recorder.target_check_count);
+    try std.testing.expectEqual(@as(usize, 1), recorder.move_count);
+    try std.testing.expectEqual(@as(usize, 0), browser.tabs.len());
+    try std.testing.expect(browser.tabs.active_tab_id == null);
+    try std.testing.expectEqual(destination_window_handle, recorder.destination_window_handle);
+    try std.testing.expectEqual(@as(?usize, 0), recorder.insertion_index);
+    try std.testing.expectEqualStrings("CNN", recorder.title);
+    try std.testing.expectEqualStrings("https://cnn.example", recorder.url);
 }
 
 test "active tab move command leaves source tab when no target window exists" {

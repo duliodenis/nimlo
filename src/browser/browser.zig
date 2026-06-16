@@ -116,6 +116,7 @@ pub const Browser = struct {
             .on_tab_reordered_requested = handleTabReorderedRequested,
             .on_active_tab_detach_requested = handleActiveTabDetachRequested,
             .on_active_tab_move_to_existing_window_requested = handleActiveTabMoveToExistingWindowRequested,
+            .on_tab_move_to_window_requested = handleTabMoveToWindowRequested,
             .on_active_tab_back_requested = handleActiveTabBackRequested,
             .on_active_tab_forward_requested = handleActiveTabForwardRequested,
         });
@@ -127,10 +128,17 @@ pub const Browser = struct {
     }
 
     pub fn addMovedTab(self: *Browser, moved_tab: webview_events.DetachedTab) !void {
+        try self.addMovedTabAt(moved_tab, null);
+    }
+
+    pub fn addMovedTabAt(self: *Browser, moved_tab: webview_events.DetachedTab, insertion_index: ?usize) !void {
         const url = try self.allocator.dupe(u8, moved_tab.url);
         const title = try self.allocator.dupe(u8, moved_tab.title);
         const favicon_url = try self.allocator.dupe(u8, moved_tab.favicon_url);
-        const id = try self.tabs.createTab(url, moved_tab.is_private);
+        const id = if (insertion_index) |index|
+            try self.tabs.createTabAt(url, moved_tab.is_private, index)
+        else
+            try self.tabs.createTab(url, moved_tab.is_private);
         const tab = self.tabs.findTab(id) orelse return;
         tab.title = if (title.len == 0) tab.title else title;
         tab.favicon_url = favicon_url;
@@ -470,11 +478,23 @@ pub const Browser = struct {
 
     fn handleActiveTabMoveToExistingWindowRequested(context: *anyopaque) void {
         const self: *Browser = @ptrCast(@alignCast(context));
-        if (!webview_events.emitTabMoveTargetAvailable(self)) return;
+        const active_id = self.tabs.active_tab_id orelse return;
+        self.moveTabToWindow(active_id, null, null);
+    }
 
-        const detached = self.detachActiveTabForWindowTransfer() orelse return;
+    fn handleTabMoveToWindowRequested(context: *anyopaque, tab_id: u64, destination_window_handle: ?*anyopaque, insertion_index: ?usize) void {
+        const self: *Browser = @ptrCast(@alignCast(context));
+        self.moveTabToWindow(tab_id, destination_window_handle, insertion_index);
+    }
+
+    fn moveTabToWindow(self: *Browser, tab_id: u64, destination_window_handle: ?*anyopaque, insertion_index: ?usize) void {
+        if (!webview_events.emitTabMoveTargetAvailable(self, destination_window_handle)) return;
+
+        const detached = self.detachTabForWindowTransfer(tab_id) orelse return;
         webview_events.emitTabMovedToExistingWindow(.{
             .source_context = self,
+            .destination_window_handle = destination_window_handle,
+            .insertion_index = insertion_index,
             .tab = transferPayloadFromTab(detached),
         });
     }
@@ -490,10 +510,14 @@ pub const Browser = struct {
     }
 
     fn detachActiveTabForWindowTransfer(self: *Browser) ?tab_model.Tab {
+        const active_id = self.tabs.active_tab_id orelse return null;
+        return self.detachTabForWindowTransfer(active_id);
+    }
+
+    fn detachTabForWindowTransfer(self: *Browser, tab_id: tab_model.TabId) ?tab_model.Tab {
         if (self.tabs.len() <= 1) return null;
 
-        const active_id = self.tabs.active_tab_id orelse return null;
-        const detached = self.tabs.detachTab(active_id) orelse return null;
+        const detached = self.tabs.detachTab(tab_id) orelse return null;
         self.webview_adapter.destroyWebView(detached.webview_handle);
 
         if (self.tabs.activeTab()) |active_tab| {
@@ -786,6 +810,8 @@ const MovedTabRecorder = struct {
     target_check_count: usize = 0,
     move_count: usize = 0,
     source_context: ?*anyopaque = null,
+    destination_window_handle: ?*anyopaque = null,
+    insertion_index: ?usize = null,
     title: []const u8 = "",
     url: []const u8 = "",
     is_private: bool = false,
@@ -836,10 +862,11 @@ fn recordDetachedTab(context: *anyopaque, tab: webview_events.DetachedTab) void 
     recorder.is_private = tab.is_private;
 }
 
-fn recordTabMoveTargetAvailable(context: *anyopaque, source_context: *anyopaque) bool {
+fn recordTabMoveTargetAvailable(context: *anyopaque, source_context: *anyopaque, destination_window_handle: ?*anyopaque) bool {
     const recorder: *MovedTabRecorder = @ptrCast(@alignCast(context));
     recorder.target_check_count += 1;
     recorder.source_context = source_context;
+    recorder.destination_window_handle = destination_window_handle;
     return recorder.target_available;
 }
 
@@ -847,6 +874,8 @@ fn recordMovedTab(context: *anyopaque, request: webview_events.TabMoveRequest) v
     const recorder: *MovedTabRecorder = @ptrCast(@alignCast(context));
     recorder.move_count += 1;
     recorder.source_context = request.source_context;
+    recorder.destination_window_handle = request.destination_window_handle;
+    recorder.insertion_index = request.insertion_index;
     recorder.title = request.tab.title;
     recorder.url = request.tab.url;
     recorder.is_private = request.tab.is_private;
@@ -1816,11 +1845,55 @@ test "active tab move command removes active tab and reports moved tab when targ
     try std.testing.expectEqual(@as(usize, 1), browser.tabs.len());
     try std.testing.expectEqual(first, browser.tabs.active_tab_id.?);
     try std.testing.expectEqual(@as(?*anyopaque, @ptrCast(&browser)), recorder.source_context);
+    try std.testing.expectEqual(@as(?*anyopaque, null), recorder.destination_window_handle);
+    try std.testing.expectEqual(@as(?usize, null), recorder.insertion_index);
     try std.testing.expectEqualStrings("Example", recorder.title);
     try std.testing.expectEqualStrings("https://example.com", recorder.url);
     try std.testing.expectEqual(@as(usize, 3), recorder.history_len);
     try std.testing.expectEqual(@as(usize, 2), recorder.history_index);
     try std.testing.expectEqualStrings("nimlo://start", recorder.history_url_0);
+}
+
+test "targeted tab move command removes requested inactive tab and reports destination" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    var recorder = MovedTabRecorder{ .target_available = true };
+    webview_events.setAppSink(.{
+        .context = &recorder,
+        .on_tab_move_target_available = recordTabMoveTargetAvailable,
+        .on_tab_moved_to_existing_window = recordMovedTab,
+    });
+    defer webview_events.clearAppSink();
+
+    try browser.start();
+    const first = browser.tabs.active_tab_id.?;
+    webview_events.emitNewTabRequested();
+    const second = browser.tabs.active_tab_id.?;
+    browser.tabs.findTab(second).?.current_url = "https://example.com";
+    browser.tabs.findTab(second).?.title = "Example";
+    webview_events.emitNewTabRequested();
+    const third = browser.tabs.active_tab_id.?;
+    const destination_window_handle: ?*anyopaque = @ptrFromInt(0x2);
+
+    webview_events.emitTabMoveToWindowRequested(second, destination_window_handle, 1);
+
+    try std.testing.expectEqual(@as(usize, 1), recorder.target_check_count);
+    try std.testing.expectEqual(@as(usize, 1), recorder.move_count);
+    try std.testing.expectEqual(@as(usize, 2), browser.tabs.len());
+    try std.testing.expectEqual(third, browser.tabs.active_tab_id.?);
+    try std.testing.expectEqual(first, browser.tabs.tabs.items[0].id);
+    try std.testing.expectEqual(third, browser.tabs.tabs.items[1].id);
+    try std.testing.expectEqual(@as(?*anyopaque, @ptrCast(&browser)), recorder.source_context);
+    try std.testing.expectEqual(destination_window_handle, recorder.destination_window_handle);
+    try std.testing.expectEqual(@as(?usize, 1), recorder.insertion_index);
+    try std.testing.expectEqualStrings("Example", recorder.title);
+    try std.testing.expectEqualStrings("https://example.com", recorder.url);
 }
 
 test "active tab move command leaves source tab when no target window exists" {

@@ -38,6 +38,8 @@ pub const DetachedTab = struct {
 
 pub const TabMoveRequest = struct {
     source_context: *anyopaque,
+    destination_window_handle: ?*anyopaque = null,
+    insertion_index: ?usize = null,
     tab: DetachedTab,
 };
 
@@ -61,6 +63,7 @@ pub const EventSink = struct {
     on_tab_reordered_requested: ?*const fn (context: *anyopaque, from_index: usize, to_index: usize) void = null,
     on_active_tab_detach_requested: ?*const fn (context: *anyopaque) void = null,
     on_active_tab_move_to_existing_window_requested: ?*const fn (context: *anyopaque) void = null,
+    on_tab_move_to_window_requested: ?*const fn (context: *anyopaque, tab_id: u64, destination_window_handle: ?*anyopaque, insertion_index: ?usize) void = null,
     on_active_tab_back_requested: ?*const fn (context: *anyopaque) void = null,
     on_active_tab_forward_requested: ?*const fn (context: *anyopaque) void = null,
 };
@@ -79,7 +82,7 @@ pub const AppSink = struct {
     on_new_window_requested: ?*const fn (context: *anyopaque) void = null,
     on_window_closed: ?*const fn (context: *anyopaque, window_handle: ?*anyopaque) void = null,
     on_tab_detached: ?*const fn (context: *anyopaque, tab: DetachedTab) void = null,
-    on_tab_move_target_available: ?*const fn (context: *anyopaque, source_context: *anyopaque) bool = null,
+    on_tab_move_target_available: ?*const fn (context: *anyopaque, source_context: *anyopaque, destination_window_handle: ?*anyopaque) bool = null,
     on_tab_moved_to_existing_window: ?*const fn (context: *anyopaque, request: TabMoveRequest) void = null,
 };
 
@@ -265,6 +268,14 @@ pub fn emitActiveTabMoveToExistingWindowRequested() void {
     }
 }
 
+pub fn emitTabMoveToWindowRequested(tab_id: u64, destination_window_handle: ?*anyopaque, insertion_index: ?usize) void {
+    if (current_sink) |sink| {
+        if (sink.on_tab_move_to_window_requested) |callback| {
+            callback(sink.context, tab_id, destination_window_handle, insertion_index);
+        }
+    }
+}
+
 pub fn emitActiveTabBackRequested() void {
     if (current_sink) |sink| {
         if (sink.on_active_tab_back_requested) |callback| {
@@ -335,10 +346,10 @@ pub fn emitTabDetached(tab: DetachedTab) void {
     }
 }
 
-pub fn emitTabMoveTargetAvailable(source_context: *anyopaque) bool {
+pub fn emitTabMoveTargetAvailable(source_context: *anyopaque, destination_window_handle: ?*anyopaque) bool {
     if (current_app_sink) |sink| {
         if (sink.on_tab_move_target_available) |callback| {
-            return callback(sink.context, source_context);
+            return callback(sink.context, source_context, destination_window_handle);
         }
     }
     return false;

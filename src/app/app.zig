@@ -134,6 +134,17 @@ const AppController = struct {
         }
         return null;
     }
+
+    fn sessionForMoveDestination(self: *AppController, source_context: *anyopaque, destination_window_handle: ?*anyopaque) ?*BrowserWindowSession {
+        if (destination_window_handle == null) return self.newestOtherSession(source_context);
+
+        for (self.sessions.items) |session| {
+            if (session.window.nativeHandle() != destination_window_handle) continue;
+            if (@as(*anyopaque, @ptrCast(&session.core)) == source_context) return null;
+            return session;
+        }
+        return null;
+    }
 };
 
 const BrowserWindowSession = struct {
@@ -160,19 +171,19 @@ fn handleTabDetached(context: *anyopaque, tab: webview_events.DetachedTab) void 
     };
 }
 
-fn handleTabMoveTargetAvailable(context: *anyopaque, source_context: *anyopaque) bool {
+fn handleTabMoveTargetAvailable(context: *anyopaque, source_context: *anyopaque, destination_window_handle: ?*anyopaque) bool {
     const controller: *AppController = @ptrCast(@alignCast(context));
-    return controller.newestOtherSession(source_context) != null;
+    return controller.sessionForMoveDestination(source_context, destination_window_handle) != null;
 }
 
 fn handleTabMovedToExistingWindow(context: *anyopaque, request: webview_events.TabMoveRequest) void {
     const controller: *AppController = @ptrCast(@alignCast(context));
-    const destination = controller.newestOtherSession(request.source_context) orelse return;
+    const destination = controller.sessionForMoveDestination(request.source_context, request.destination_window_handle) orelse return;
 
     destination.window.focus() catch |err| {
         std.debug.print("destination window focus failed: {s}\n", .{@errorName(err)});
     };
-    destination.core.addMovedTab(request.tab) catch |err| {
+    destination.core.addMovedTabAt(request.tab, request.insertion_index) catch |err| {
         std.debug.print("move tab to window failed: {s}\n", .{@errorName(err)});
     };
 }

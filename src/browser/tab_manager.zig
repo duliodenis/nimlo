@@ -32,6 +32,14 @@ pub const TabManager = struct {
         return id;
     }
 
+    pub fn createTabAt(self: *TabManager, start_url: []const u8, is_private: bool, insertion_index: usize) !TabId {
+        const target_index = @min(insertion_index, self.tabs.items.len);
+        const id = try self.createTab(start_url, is_private);
+        const appended_index = self.tabs.items.len - 1;
+        _ = self.moveTab(appended_index, target_index);
+        return id;
+    }
+
     pub fn closeTab(self: *TabManager, id: TabId) bool {
         _ = self.detachTab(id) orelse return false;
         return true;
@@ -136,6 +144,30 @@ test "createTab appends and activates tab" {
     try std.testing.expectEqual(@as(usize, 1), manager.len());
     try std.testing.expectEqual(id, manager.active_tab_id.?);
     try std.testing.expectEqualStrings("nimlo://start", manager.activeTab().?.current_url);
+}
+
+test "createTabAt inserts and activates tab" {
+    var manager = TabManager.init(std.testing.allocator);
+    defer manager.deinit();
+
+    const first = try manager.createTab("nimlo://start", false);
+    const second = try manager.createTab("https://example.com", false);
+    const inserted = try manager.createTabAt("https://ziglang.org", true, 1);
+
+    try expectTabOrder(&manager, &.{ first, inserted, second });
+    try std.testing.expectEqual(inserted, manager.active_tab_id.?);
+    try std.testing.expect(manager.findTab(inserted).?.is_private);
+}
+
+test "createTabAt clamps past end" {
+    var manager = TabManager.init(std.testing.allocator);
+    defer manager.deinit();
+
+    const first = try manager.createTab("nimlo://start", false);
+    const inserted = try manager.createTabAt("https://ziglang.org", false, 99);
+
+    try expectTabOrder(&manager, &.{ first, inserted });
+    try std.testing.expectEqual(inserted, manager.active_tab_id.?);
 }
 
 test "activateTab switches active tab" {

@@ -146,6 +146,9 @@ var current_drag_tab_id: ?u64 = null;
 var current_drag_last_index: ?usize = null;
 var current_drag_start_point: CGPoint = .{ .x = 0, .y = 0 };
 var current_drag_has_moved = false;
+var current_drag_source_window: Id = null;
+var current_drag_destination_window: Id = null;
+var current_drag_destination_index: ?usize = null;
 var webview_chrome_states: std.ArrayList(WebViewChromeState) = .empty;
 var favicon_cache: std.ArrayList(CachedFavicon) = .empty;
 var rendered_tab_controls: std.ArrayList(RenderedTabControl) = .empty;
@@ -1420,6 +1423,9 @@ fn tabButtonMouseDown(button: Id, _: Sel, event: Id) callconv(.c) void {
     current_drag_last_index = index;
     current_drag_start_point = point;
     current_drag_has_moved = false;
+    current_drag_source_window = current_window;
+    current_drag_destination_window = null;
+    current_drag_destination_index = null;
 }
 
 fn tabButtonMouseDragged(_: Id, _: Sel, event: Id) callconv(.c) void {
@@ -1430,6 +1436,15 @@ fn tabButtonMouseDragged(_: Id, _: Sel, event: Id) callconv(.c) void {
     if (dx < 6) return;
 
     current_drag_has_moved = true;
+    if (tabDropTargetForEvent(event)) |target| {
+        current_drag_destination_window = target.window;
+        current_drag_destination_index = target.insertion_index;
+        return;
+    }
+
+    current_drag_destination_window = null;
+    current_drag_destination_index = null;
+
     const to_index = tabIndexAtDocumentX(point.x) orelse return;
     if (from_index == to_index) return;
 
@@ -1440,8 +1455,15 @@ fn tabButtonMouseDragged(_: Id, _: Sel, event: Id) callconv(.c) void {
 fn tabButtonMouseUp(button: Id, _: Sel, _: Id) callconv(.c) void {
     const tab_id = current_drag_tab_id orelse tabIdFromSender(button) orelse return;
     const should_activate = !current_drag_has_moved;
+    const destination_window = current_drag_destination_window;
+    const destination_index = current_drag_destination_index;
 
     resetCurrentTabDrag();
+    if (destination_window != null) {
+        webview_events.emitTabMoveToWindowRequested(tab_id, destination_window, destination_index);
+        return;
+    }
+
     if (should_activate) {
         webview_events.emitTabActivatedRequested(tab_id);
     }
@@ -1452,6 +1474,9 @@ fn resetCurrentTabDrag() void {
     current_drag_last_index = null;
     current_drag_start_point = .{ .x = 0, .y = 0 };
     current_drag_has_moved = false;
+    current_drag_source_window = null;
+    current_drag_destination_window = null;
+    current_drag_destination_index = null;
 }
 
 fn tabIdFromSender(sender: Id) ?u64 {
@@ -1490,6 +1515,69 @@ fn tabIndexAtDocumentX(x: CGFloat) ?usize {
     var index: usize = @intFromFloat(@floor(clamped_x / stride));
     if (index >= tab_count) index = tab_count - 1;
     return index;
+}
+
+const TabDropTarget = struct {
+    window: Id,
+    insertion_index: usize,
+};
+
+fn tabDropTargetForEvent(event: Id) ?TabDropTarget {
+    const screen_point = eventLocationOnScreen(event) orelse return null;
+    saveActiveChromeWindowState();
+
+    for (chrome_window_states.items) |*state| {
+        if (state.window == null or state.window == current_drag_source_window) continue;
+        const document_view = state.tab_document_view orelse continue;
+        const rect = screenRectForView(document_view) orelse continue;
+        if (!pointInRect(screen_point, rect)) continue;
+
+        const document_point = screenPointInView(screen_point, document_view) orelse continue;
+        return .{
+            .window = state.window,
+            .insertion_index = insertionIndexAtDocumentX(state, document_point.x),
+        };
+    }
+
+    return null;
+}
+
+fn eventLocationOnScreen(event: Id) ?CGPoint {
+    const window = msg0(Id, event, sel("window")) orelse return null;
+    const window_point = msg0(CGPoint, event, sel("locationInWindow"));
+    return msg1(CGPoint, window, sel("convertPointToScreen:"), window_point);
+}
+
+fn screenRectForView(view: Id) ?CGRect {
+    const window = msg0(Id, view, sel("window")) orelse return null;
+    const bounds = msg0(CGRect, view, sel("bounds"));
+    const window_rect = msg2(CGRect, view, sel("convertRect:toView:"), bounds, @as(Id, null));
+    return msg1(CGRect, window, sel("convertRectToScreen:"), window_rect);
+}
+
+fn screenPointInView(screen_point: CGPoint, view: Id) ?CGPoint {
+    const window = msg0(Id, view, sel("window")) orelse return null;
+    const window_point = msg1(CGPoint, window, sel("convertPointFromScreen:"), screen_point);
+    return msg2(CGPoint, view, sel("convertPoint:fromView:"), window_point, @as(Id, null));
+}
+
+fn insertionIndexAtDocumentX(state: *const ChromeWindowState, x: CGFloat) usize {
+    const tab_count = state.tab_snapshots.items.len;
+    if (tab_count == 0) return 0;
+
+    const container = state.tab_container orelse return tab_count;
+    const slot_width = tabWidthForCount(tab_count, titlebarTabAreaWidth(container));
+    const stride = slot_width + titlebar_new_tab_button_gap;
+    const clamped_x = @max(@as(CGFloat, 0), x);
+    const raw_index: usize = @intFromFloat(@floor(clamped_x / stride));
+    return @min(raw_index, tab_count);
+}
+
+fn pointInRect(point: CGPoint, rect: CGRect) bool {
+    return point.x >= rect.origin.x and
+        point.y >= rect.origin.y and
+        point.x <= rect.origin.x + rect.size.width and
+        point.y <= rect.origin.y + rect.size.height;
 }
 
 fn absFloat(value: CGFloat) CGFloat {

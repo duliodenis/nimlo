@@ -18,6 +18,7 @@ pub fn run() !void {
         .on_new_window_requested = handleNewWindowRequested,
         .on_window_closed = handleWindowClosed,
         .on_tab_detached = handleTabDetached,
+        .on_tab_detached_from_source = handleTabDetachedFromSource,
         .on_tab_move_target_available = handleTabMoveTargetAvailable,
         .on_tab_moved_to_existing_window = handleTabMovedToExistingWindow,
     });
@@ -176,6 +177,21 @@ fn handleTabDetached(context: *anyopaque, tab: webview_events.DetachedTab) void 
     controller.createWindowWithInitialTab(tab) catch |err| {
         std.debug.print("detached tab window failed: {s}\n", .{@errorName(err)});
     };
+}
+
+fn handleTabDetachedFromSource(context: *anyopaque, request: webview_events.TabDetachRequest) void {
+    const controller: *AppController = @ptrCast(@alignCast(context));
+    const source = controller.sessionForBrowserContext(request.source_context);
+
+    controller.createWindowWithInitialTab(request.tab) catch |err| {
+        std.debug.print("detached tab window failed: {s}\n", .{@errorName(err)});
+        return;
+    };
+    if (source) |source_session| {
+        if (source_session.core.tabs.len() == 0) {
+            source_session.window.close();
+        }
+    }
 }
 
 fn handleTabMoveTargetAvailable(context: *anyopaque, source_context: *anyopaque, destination_window_handle: ?*anyopaque) bool {

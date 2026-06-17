@@ -43,6 +43,11 @@ pub const TabMoveRequest = struct {
     tab: DetachedTab,
 };
 
+pub const TabDetachRequest = struct {
+    source_context: *anyopaque,
+    tab: DetachedTab,
+};
+
 pub const EventSink = struct {
     context: *anyopaque,
     on_navigation: *const fn (context: *anyopaque, event: NavigationEvent) void,
@@ -62,6 +67,7 @@ pub const EventSink = struct {
     on_tab_closed_requested: ?*const fn (context: *anyopaque, tab_id: u64) void = null,
     on_tab_reordered_requested: ?*const fn (context: *anyopaque, from_index: usize, to_index: usize) void = null,
     on_active_tab_detach_requested: ?*const fn (context: *anyopaque) void = null,
+    on_tab_detach_requested: ?*const fn (context: *anyopaque, tab_id: u64) void = null,
     on_active_tab_move_to_existing_window_requested: ?*const fn (context: *anyopaque) void = null,
     on_tab_move_to_window_requested: ?*const fn (context: *anyopaque, tab_id: u64, destination_window_handle: ?*anyopaque, insertion_index: ?usize) void = null,
     on_active_tab_back_requested: ?*const fn (context: *anyopaque) void = null,
@@ -82,6 +88,7 @@ pub const AppSink = struct {
     on_new_window_requested: ?*const fn (context: *anyopaque) void = null,
     on_window_closed: ?*const fn (context: *anyopaque, window_handle: ?*anyopaque) void = null,
     on_tab_detached: ?*const fn (context: *anyopaque, tab: DetachedTab) void = null,
+    on_tab_detached_from_source: ?*const fn (context: *anyopaque, request: TabDetachRequest) void = null,
     on_tab_move_target_available: ?*const fn (context: *anyopaque, source_context: *anyopaque, destination_window_handle: ?*anyopaque) bool = null,
     on_tab_moved_to_existing_window: ?*const fn (context: *anyopaque, request: TabMoveRequest) void = null,
 };
@@ -260,6 +267,14 @@ pub fn emitActiveTabDetachRequested() void {
     }
 }
 
+pub fn emitTabDetachRequested(tab_id: u64) void {
+    if (current_sink) |sink| {
+        if (sink.on_tab_detach_requested) |callback| {
+            callback(sink.context, tab_id);
+        }
+    }
+}
+
 pub fn emitActiveTabMoveToExistingWindowRequested() void {
     if (current_sink) |sink| {
         if (sink.on_active_tab_move_to_existing_window_requested) |callback| {
@@ -342,6 +357,14 @@ pub fn emitTabDetached(tab: DetachedTab) void {
     if (current_app_sink) |sink| {
         if (sink.on_tab_detached) |callback| {
             callback(sink.context, tab);
+        }
+    }
+}
+
+pub fn emitTabDetachedFromSource(request: TabDetachRequest) void {
+    if (current_app_sink) |sink| {
+        if (sink.on_tab_detached_from_source) |callback| {
+            callback(sink.context, request);
         }
     }
 }

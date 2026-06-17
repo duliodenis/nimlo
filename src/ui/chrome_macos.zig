@@ -1464,15 +1464,20 @@ fn tabButtonMouseDragged(_: Id, _: Sel, event: Id) callconv(.c) void {
     current_drag_last_index = to_index;
 }
 
-fn tabButtonMouseUp(button: Id, _: Sel, _: Id) callconv(.c) void {
+fn tabButtonMouseUp(button: Id, _: Sel, event: Id) callconv(.c) void {
     const tab_id = current_drag_tab_id orelse tabIdFromSender(button) orelse return;
     const should_activate = !current_drag_has_moved;
     const destination_window = current_drag_destination_window;
     const destination_index = current_drag_destination_index;
+    const should_detach = current_drag_has_moved and destination_window == null and !eventIsInSourceTabStrip(event);
 
     resetCurrentTabDrag();
     if (destination_window != null) {
         webview_events.emitTabMoveToWindowRequested(tab_id, destination_window, destination_index);
+        return;
+    }
+    if (should_detach) {
+        webview_events.emitTabDetachRequested(tab_id);
         return;
     }
 
@@ -1553,6 +1558,15 @@ fn tabDropTargetForEvent(event: Id) ?TabDropTarget {
     }
 
     return null;
+}
+
+fn eventIsInSourceTabStrip(event: Id) bool {
+    const source_window = current_drag_source_window orelse return false;
+    const state = chromeWindowStateForWindow(source_window) orelse return false;
+    const document_view = state.tab_document_view orelse return false;
+    const screen_point = eventLocationOnScreen(event) orelse return false;
+    const rect = screenRectForView(document_view) orelse return false;
+    return pointInRect(screen_point, rect);
 }
 
 fn showTabDropIndicator(target: TabDropTarget) void {

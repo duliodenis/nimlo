@@ -1864,6 +1864,73 @@ test "targeted tab detach command can detach final source tab" {
     try std.testing.expect(browser.tabs.active_tab_id == null);
 }
 
+test "targeted tab detach command removes requested inactive tab and preserves active tab" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    var recorder = DetachedTabRecorder{};
+    webview_events.setAppSink(.{
+        .context = &recorder,
+        .on_tab_detached_from_source = recordDetachedTabFromSource,
+    });
+    defer webview_events.clearAppSink();
+
+    try browser.start();
+    const first = browser.tabs.active_tab_id.?;
+    webview_events.emitNewTabRequested();
+    const second = browser.tabs.active_tab_id.?;
+    browser.tabs.findTab(second).?.current_url = "https://example.com";
+    browser.tabs.findTab(second).?.title = "Example";
+    webview_events.emitNewTabRequested();
+    const third = browser.tabs.active_tab_id.?;
+
+    webview_events.emitTabDetachRequested(second);
+
+    try std.testing.expectEqual(@as(usize, 1), recorder.count);
+    try std.testing.expectEqual(@as(?*anyopaque, @ptrCast(&browser)), recorder.source_context);
+    try std.testing.expectEqualStrings("Example", recorder.title);
+    try std.testing.expectEqualStrings("https://example.com", recorder.url);
+    try std.testing.expectEqual(@as(usize, 2), browser.tabs.len());
+    try std.testing.expectEqual(third, browser.tabs.active_tab_id.?);
+    try std.testing.expectEqual(first, browser.tabs.tabs.items[0].id);
+    try std.testing.expectEqual(third, browser.tabs.tabs.items[1].id);
+}
+
+test "targeted tab detach command ignores unknown tab" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    var recorder = DetachedTabRecorder{};
+    webview_events.setAppSink(.{
+        .context = &recorder,
+        .on_tab_detached_from_source = recordDetachedTabFromSource,
+    });
+    defer webview_events.clearAppSink();
+
+    try browser.start();
+    const first = browser.tabs.active_tab_id.?;
+    webview_events.emitNewTabRequested();
+    const second = browser.tabs.active_tab_id.?;
+
+    webview_events.emitTabDetachRequested(99);
+
+    try std.testing.expectEqual(@as(usize, 0), recorder.count);
+    try std.testing.expectEqual(@as(usize, 2), browser.tabs.len());
+    try std.testing.expectEqual(second, browser.tabs.active_tab_id.?);
+    try std.testing.expectEqual(first, browser.tabs.tabs.items[0].id);
+    try std.testing.expectEqual(second, browser.tabs.tabs.items[1].id);
+}
+
 test "active tab move command removes active tab and reports moved tab when target exists" {
     var adapter = webview.WebViewAdapter.init();
     var browser = Browser.init(
@@ -2010,6 +2077,40 @@ test "active tab move command leaves source tab when no target window exists" {
     try std.testing.expectEqual(@as(usize, 0), recorder.move_count);
     try std.testing.expectEqual(@as(usize, 2), browser.tabs.len());
     try std.testing.expectEqual(second, browser.tabs.active_tab_id.?);
+}
+
+test "targeted tab move command ignores unknown tab after target check" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    var recorder = MovedTabRecorder{ .target_available = true };
+    webview_events.setAppSink(.{
+        .context = &recorder,
+        .on_tab_move_target_available = recordTabMoveTargetAvailable,
+        .on_tab_moved_to_existing_window = recordMovedTab,
+    });
+    defer webview_events.clearAppSink();
+
+    try browser.start();
+    const first = browser.tabs.active_tab_id.?;
+    webview_events.emitNewTabRequested();
+    const second = browser.tabs.active_tab_id.?;
+    const destination_window_handle: ?*anyopaque = @ptrFromInt(0x4);
+
+    webview_events.emitTabMoveToWindowRequested(99, destination_window_handle, 0);
+
+    try std.testing.expectEqual(@as(usize, 1), recorder.target_check_count);
+    try std.testing.expectEqual(@as(usize, 0), recorder.move_count);
+    try std.testing.expectEqual(destination_window_handle, recorder.destination_window_handle);
+    try std.testing.expectEqual(@as(usize, 2), browser.tabs.len());
+    try std.testing.expectEqual(second, browser.tabs.active_tab_id.?);
+    try std.testing.expectEqual(first, browser.tabs.tabs.items[0].id);
+    try std.testing.expectEqual(second, browser.tabs.tabs.items[1].id);
 }
 
 test "navigation event updates tab matching source WebView handle" {

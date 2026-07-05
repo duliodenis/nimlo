@@ -9,6 +9,9 @@ const window = @import("window.zig");
 const webview = @import("../webview/webview_adapter.zig");
 const webview_events = @import("../webview/webview_events.zig");
 
+const default_window_width = 1024;
+const default_window_height = 768;
+
 pub fn run() !void {
     var controller = try AppController.init(std.heap.page_allocator);
     defer controller.deinit();
@@ -72,18 +75,19 @@ const AppController = struct {
     }
 
     fn createWindow(self: *AppController) !void {
-        try self.createWindowWithInitialTab(null);
+        _ = try self.createWindowWithInitialTab(null, null);
     }
 
-    fn createWindowWithInitialTab(self: *AppController, initial_tab: ?webview_events.DetachedTab) !void {
+    fn createWindowWithInitialTab(self: *AppController, initial_tab: ?webview_events.DetachedTab, placement: ?webview_events.DetachedWindowPlacement) !*BrowserWindowSession {
         const session = try self.allocator.create(BrowserWindowSession);
         errdefer self.allocator.destroy(session);
 
         session.* = undefined;
         session.window = try window.AppWindow.create(.{
             .title = "Nimlo",
-            .width = 1024,
-            .height = 768,
+            .width = if (placement) |value| windowDimension(value.width, default_window_width) else default_window_width,
+            .height = if (placement) |value| windowDimension(value.height, default_window_height) else default_window_height,
+            .top_left = if (placement) |value| .{ .x = value.top_left.x, .y = value.top_left.y } else null,
         });
         session.engine = webview.WebViewAdapter.init();
         session.core = browser.Browser.init(self.config, self.privacy, &session.engine);
@@ -101,6 +105,7 @@ const AppController = struct {
         session.core.publishChromeState();
 
         try self.sessions.append(self.allocator, session);
+        return session;
     }
 
     fn run(self: *AppController) !void {
@@ -174,24 +179,31 @@ fn handleNewWindowRequested(context: *anyopaque) void {
 
 fn handleTabDetached(context: *anyopaque, tab: webview_events.DetachedTab) void {
     const controller: *AppController = @ptrCast(@alignCast(context));
-    controller.createWindowWithInitialTab(tab) catch |err| {
-        std.debug.print("detached tab window failed: {s}\n", .{@errorName(err)});
-    };
-}
-
-fn handleTabDetachedFromSource(context: *anyopaque, request: webview_events.TabDetachRequest) void {
-    const controller: *AppController = @ptrCast(@alignCast(context));
-    const source = controller.sessionForBrowserContext(request.source_context);
-
-    controller.createWindowWithInitialTab(request.tab) catch |err| {
+    _ = controller.createWindowWithInitialTab(tab, null) catch |err| {
         std.debug.print("detached tab window failed: {s}\n", .{@errorName(err)});
         return;
     };
+}
+
+fn handleTabDetachedFromSource(context: *anyopaque, request: webview_events.TabDetachRequest) ?*anyopaque {
+    const controller: *AppController = @ptrCast(@alignCast(context));
+    const source = controller.sessionForBrowserContext(request.source_context);
+
+    const detached_session = controller.createWindowWithInitialTab(request.tab, request.placement) catch |err| {
+        std.debug.print("detached tab window failed: {s}\n", .{@errorName(err)});
+        return null;
+    };
     if (source) |source_session| {
-        if (source_session.core.tabs.len() == 0) {
+        if (source_session.core.tabs.len() == 0 and !request.defer_empty_source_close) {
             source_session.window.close();
         }
     }
+    return detached_session.window.nativeHandle();
+}
+
+fn windowDimension(value: f64, fallback: u32) u32 {
+    if (!std.math.isFinite(value) or value < 1) return fallback;
+    return @intFromFloat(@round(value));
 }
 
 fn handleTabMoveTargetAvailable(context: *anyopaque, source_context: *anyopaque, destination_window_handle: ?*anyopaque) bool {

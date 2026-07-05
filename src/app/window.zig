@@ -5,6 +5,12 @@ pub const WindowOptions = struct {
     title: []const u8,
     width: u32,
     height: u32,
+    top_left: ?ScreenPoint = null,
+};
+
+pub const ScreenPoint = struct {
+    x: f64,
+    y: f64,
 };
 
 pub const AppWindow = struct {

@@ -41,6 +41,7 @@ const NSWindowStyleMaskDefault = NSWindowStyleMaskTitled |
     NSWindowStyleMaskClosable |
     NSWindowStyleMaskMiniaturizable |
     NSWindowStyleMaskResizable;
+const min_visible_window_top_margin: CGFloat = 96;
 
 extern "c" fn objc_msgSend() void;
 
@@ -50,6 +51,7 @@ pub const MacOSWindow = struct {
     title: [:0]const u8,
     width: u32,
     height: u32,
+    top_left: ?window.ScreenPoint,
     app: Id,
     handle: Id,
 
@@ -62,6 +64,7 @@ pub const MacOSWindow = struct {
             .title = title,
             .width = options.width,
             .height = options.height,
+            .top_left = options.top_left,
             .app = app,
             .handle = handle,
         };
@@ -73,7 +76,15 @@ pub const MacOSWindow = struct {
     }
 
     pub fn present(self: *MacOSWindow) !void {
-        msg0(void, self.handle, sel("center"));
+        if (self.top_left) |point| {
+            const requested = CGPoint{
+                .x = point.x,
+                .y = point.y,
+            };
+            msg1(void, self.handle, sel("setFrameTopLeftPoint:"), clampedTopLeftPoint(self.handle, requested));
+        } else {
+            msg0(void, self.handle, sel("center"));
+        }
         try self.focus();
 
         std.debug.print("macOS window ready: {s} ({d}x{d})\n", .{
@@ -93,7 +104,12 @@ pub const MacOSWindow = struct {
     }
 
     pub fn runEventLoop(self: *MacOSWindow) !void {
-        msg0(void, self.app, sel("run"));
+        // Read the NSApp handle before the self-test: the replayed drag can
+        // close windows and free the session that owns this struct, so no
+        // field access is safe after the call.
+        const app = self.app;
+        if (std.c.getenv("NIMLO_TEAR_OFF_TEST") != null) chrome.runTearOffSelfTest();
+        msg0(void, app, sel("run"));
     }
 
     pub fn nativeHandle(self: *MacOSWindow) ?*anyopaque {
@@ -142,6 +158,50 @@ fn createNativeWindow(app: Id, title: [:0]const u8, width: u32, height: u32) !Id
     msg1(void, handle, sel("setTitleVisibility:"), NSWindowTitleHidden);
     msg1(void, handle, sel("setDelegate:"), msg0(Id, app, sel("delegate")));
     return handle;
+}
+
+fn clampedTopLeftPoint(window_handle: Id, requested: CGPoint) CGPoint {
+    const screen_frame = screenVisibleFrameContainingPoint(requested) orelse return requested;
+    const window_frame = msg0(CGRect, window_handle, sel("frame"));
+
+    const min_x = screen_frame.origin.x;
+    const max_x = @max(min_x, screen_frame.origin.x + screen_frame.size.width - window_frame.size.width);
+    const min_y = screen_frame.origin.y + @min(min_visible_window_top_margin, screen_frame.size.height);
+    const max_y = screen_frame.origin.y + screen_frame.size.height;
+
+    return .{
+        .x = clampFloat(requested.x, min_x, max_x),
+        .y = clampFloat(requested.y, min_y, max_y),
+    };
+}
+
+fn screenVisibleFrameContainingPoint(point: CGPoint) ?CGRect {
+    const screens = msg0(Id, cls("NSScreen"), sel("screens"));
+    if (screens != null) {
+        const count = msg0(usize, screens, sel("count"));
+        var index: usize = 0;
+        while (index < count) : (index += 1) {
+            const screen = msg1(Id, screens, sel("objectAtIndex:"), index);
+            if (screen == null) continue;
+            const frame = msg0(CGRect, screen, sel("frame"));
+            if (pointInRect(point, frame)) return msg0(CGRect, screen, sel("visibleFrame"));
+        }
+    }
+
+    const main_screen = msg0(Id, cls("NSScreen"), sel("mainScreen"));
+    if (main_screen == null) return null;
+    return msg0(CGRect, main_screen, sel("visibleFrame"));
+}
+
+fn pointInRect(point: CGPoint, rect: CGRect) bool {
+    return point.x >= rect.origin.x and
+        point.y >= rect.origin.y and
+        point.x <= rect.origin.x + rect.size.width and
+        point.y <= rect.origin.y + rect.size.height;
+}
+
+fn clampFloat(value: CGFloat, min_value: CGFloat, max_value: CGFloat) CGFloat {
+    return @min(@max(value, min_value), max_value);
 }
 
 fn installApplicationIcon(app: Id) void {

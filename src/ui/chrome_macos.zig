@@ -54,6 +54,12 @@ const titlebar_new_tab_button_gap: CGFloat = 4;
 const tab_reorder_animation_duration: CGFloat = 0.14;
 const tab_drop_indicator_width: CGFloat = 3;
 const tab_drop_indicator_height: CGFloat = 24;
+const tab_tear_off_vertical_threshold: CGFloat = 18;
+const NSEventTypeLeftMouseDown: usize = 1;
+const NSEventTypeLeftMouseUp: usize = 2;
+const NSEventTypeLeftMouseDragged: usize = 6;
+const NSEventMaskLeftMouseUp: usize = 1 << NSEventTypeLeftMouseUp;
+const NSEventMaskLeftMouseDragged: usize = 1 << NSEventTypeLeftMouseDragged;
 
 const NSButtonTypeMomentaryChange: usize = 5;
 const NSModalResponseSecondButtonReturn: isize = 1001;
@@ -149,10 +155,18 @@ var current_tab_snapshots: std.ArrayList(webview_events.TabSnapshot) = .empty;
 var current_drag_tab_id: ?u64 = null;
 var current_drag_last_index: ?usize = null;
 var current_drag_start_point: CGPoint = .{ .x = 0, .y = 0 };
+var current_drag_grab_in_button: CGPoint = .{ .x = 0, .y = 0 };
 var current_drag_has_moved = false;
 var current_drag_source_window: Id = null;
 var current_drag_destination_window: Id = null;
 var current_drag_destination_index: ?usize = null;
+// Set while a torn-off window is following the mouse. The offset is the
+// vector from the cursor to the detached window's top-left, so the window
+// stays glued to the original grab point on every mouseDragged.
+var detached_drag_window: Id = null;
+var detached_drag_offset: CGPoint = .{ .x = 0, .y = 0 };
+var detached_drag_close_on_release: Id = null;
+var tear_off_self_test_active = false;
 var webview_chrome_states: std.ArrayList(WebViewChromeState) = .empty;
 var favicon_cache: std.ArrayList(CachedFavicon) = .empty;
 var rendered_tab_controls: std.ArrayList(RenderedTabControl) = .empty;
@@ -1423,6 +1437,7 @@ fn installTitlebarTabButtonClass() void {
 }
 
 fn tabButtonMouseDown(button: Id, _: Sel, event: Id) callconv(.c) void {
+    clearStaleDetachedDrag();
     activateChromeWindowStateForSender(button);
     const tab_id = tabIdFromSender(button) orelse return;
     const index = tabSnapshotIndex(tab_id) orelse return;
@@ -1431,6 +1446,13 @@ fn tabButtonMouseDown(button: Id, _: Sel, event: Id) callconv(.c) void {
     current_drag_tab_id = tab_id;
     current_drag_last_index = index;
     current_drag_start_point = point;
+    current_drag_grab_in_button = msg2(
+        CGPoint,
+        button,
+        sel("convertPoint:fromView:"),
+        msg0(CGPoint, event, sel("locationInWindow")),
+        @as(Id, null),
+    );
     current_drag_has_moved = false;
     current_drag_source_window = current_window;
     current_drag_destination_window = null;
@@ -1439,7 +1461,8 @@ fn tabButtonMouseDown(button: Id, _: Sel, event: Id) callconv(.c) void {
 }
 
 fn tabButtonMouseDragged(_: Id, _: Sel, event: Id) callconv(.c) void {
-    if (current_drag_tab_id == null) return;
+    if (moveDetachedDragWindow(event)) return;
+    const tab_id = current_drag_tab_id orelse return;
     const from_index = current_drag_last_index orelse return;
     const point = eventLocationInTabDocument(event) orelse return;
     const dx = absFloat(point.x - current_drag_start_point.x);
@@ -1457,6 +1480,11 @@ fn tabButtonMouseDragged(_: Id, _: Sel, event: Id) callconv(.c) void {
     current_drag_destination_index = null;
     hideAllTabDropIndicators();
 
+    if (eventIsPastSourceTearOffThreshold(event)) {
+        tearOffDraggedTab(tab_id, event);
+        return;
+    }
+
     const to_index = tabIndexAtDocumentX(point.x) orelse return;
     if (from_index == to_index) return;
 
@@ -1465,11 +1493,13 @@ fn tabButtonMouseDragged(_: Id, _: Sel, event: Id) callconv(.c) void {
 }
 
 fn tabButtonMouseUp(button: Id, _: Sel, event: Id) callconv(.c) void {
+    if (finishDetachedDragWindow(event)) return;
     const tab_id = current_drag_tab_id orelse tabIdFromSender(button) orelse return;
     const should_activate = !current_drag_has_moved;
     const destination_window = current_drag_destination_window;
     const destination_index = current_drag_destination_index;
     const should_detach = current_drag_has_moved and destination_window == null and !eventIsInSourceTabStrip(event);
+    const detach_placement = if (should_detach) detachedWindowPlacement(event) else null;
 
     resetCurrentTabDrag();
     if (destination_window != null) {
@@ -1477,7 +1507,7 @@ fn tabButtonMouseUp(button: Id, _: Sel, event: Id) callconv(.c) void {
         return;
     }
     if (should_detach) {
-        webview_events.emitTabDetachRequested(tab_id);
+        _ = webview_events.emitTabDetachRequested(tab_id, detach_placement, false);
         return;
     }
 
@@ -1490,6 +1520,7 @@ fn resetCurrentTabDrag() void {
     current_drag_tab_id = null;
     current_drag_last_index = null;
     current_drag_start_point = .{ .x = 0, .y = 0 };
+    current_drag_grab_in_button = .{ .x = 0, .y = 0 };
     current_drag_has_moved = false;
     current_drag_source_window = null;
     current_drag_destination_window = null;
@@ -1561,12 +1592,275 @@ fn tabDropTargetForEvent(event: Id) ?TabDropTarget {
 }
 
 fn eventIsInSourceTabStrip(event: Id) bool {
-    const source_window = current_drag_source_window orelse return false;
-    const state = chromeWindowStateForWindow(source_window) orelse return false;
-    const document_view = state.tab_document_view orelse return false;
     const screen_point = eventLocationOnScreen(event) orelse return false;
-    const rect = screenRectForView(document_view) orelse return false;
+    const rect = sourceTabStripScreenRect() orelse return false;
     return pointInRect(screen_point, rect);
+}
+
+fn eventIsPastSourceTearOffThreshold(event: Id) bool {
+    const screen_point = eventLocationOnScreen(event) orelse return false;
+    const rect = sourceTabStripScreenRect() orelse return false;
+    return screen_point.y < rect.origin.y - tab_tear_off_vertical_threshold or
+        screen_point.y > rect.origin.y + rect.size.height + tab_tear_off_vertical_threshold;
+}
+
+fn sourceTabStripScreenRect() ?CGRect {
+    const source_window = current_drag_source_window orelse return null;
+    const state = chromeWindowStateForWindow(source_window) orelse return null;
+    const document_view = state.tab_document_view orelse return null;
+    return screenRectForView(document_view);
+}
+
+fn tearOffDraggedTab(tab_id: u64, event: Id) void {
+    const placement = detachedWindowPlacement(event) orelse {
+        resetCurrentTabDrag();
+        _ = webview_events.emitTabDetachRequested(tab_id, null, false);
+        return;
+    };
+    const cursor = eventLocationOnScreen(event) orelse return;
+    const source_window = current_drag_source_window;
+    const tearing_off_final_tab = current_tab_snapshots.items.len <= 1;
+    resetCurrentTabDrag();
+
+    const detached_window = webview_events.emitTabDetachRequested(tab_id, placement, tearing_off_final_tab) orelse return;
+
+    detached_drag_window = detached_window;
+    detached_drag_offset = .{
+        .x = placement.top_left.x - cursor.x,
+        .y = placement.top_left.y - cursor.y,
+    };
+    if (tearing_off_final_tab) {
+        if (source_window) |source| {
+            msg1(void, source, sel("setAlphaValue:"), @as(CGFloat, 0));
+            detached_drag_close_on_release = source;
+        }
+    }
+
+    // Window creation is slow enough that the mouse has usually moved on;
+    // snap to wherever the cursor is right now before tracking takes over.
+    moveDetachedDragWindowToCursor(msg0(CGPoint, cls("NSEvent"), sel("mouseLocation")));
+
+    // Detaching the tab rebuilt the strip and removed the dragged button, so
+    // AppKit stops delivering its mouseDragged events. Track the rest of the
+    // drag ourselves; the self-test drives the handlers directly instead.
+    if (!tear_off_self_test_active) runDetachedWindowDragLoop();
+}
+
+// Synchronous mouse-tracking loop for the remainder of a tear-off drag,
+// following the standard AppKit pattern for custom dragging. Runs the run
+// loop in NSEventTrackingRunLoopMode until the mouse is released.
+fn runDetachedWindowDragLoop() void {
+    const app = msg0(Id, cls("NSApplication"), sel("sharedApplication"));
+    if (app == null) {
+        _ = finishDetachedDragWindowNow();
+        return;
+    }
+    const mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp;
+    const distant_future = msg0(Id, cls("NSDate"), sel("distantFuture"));
+    const tracking_mode = nsString("NSEventTrackingRunLoopMode");
+
+    while (detached_drag_window != null) {
+        const event = msg4(
+            Id,
+            app,
+            sel("nextEventMatchingMask:untilDate:inMode:dequeue:"),
+            mask,
+            distant_future,
+            tracking_mode,
+            true,
+        );
+        if (event == null) break;
+
+        const event_type = msg0(usize, event, sel("type"));
+        if (event_type == NSEventTypeLeftMouseUp) {
+            _ = finishDetachedDragWindow(event);
+            return;
+        }
+        if (eventScreenLocationLoose(event)) |cursor| {
+            moveDetachedDragWindowToCursor(cursor);
+        }
+    }
+    _ = finishDetachedDragWindowNow();
+}
+
+// Like eventLocationOnScreen, but tolerates events without a window (their
+// locationInWindow is already in screen coordinates).
+fn eventScreenLocationLoose(event: Id) ?CGPoint {
+    if (event == null) return null;
+    const window = msg0(Id, event, sel("window"));
+    const location = msg0(CGPoint, event, sel("locationInWindow"));
+    if (window == null) return location;
+    return msg1(CGPoint, window, sel("convertPointToScreen:"), location);
+}
+
+// A fresh mouseDown means any previous detached-window drag is over; if its
+// mouseUp was lost, finish the deferred bookkeeping now.
+fn clearStaleDetachedDrag() void {
+    if (detached_drag_window == null) return;
+    detached_drag_window = null;
+    detached_drag_offset = .{ .x = 0, .y = 0 };
+    if (detached_drag_close_on_release) |source| {
+        detached_drag_close_on_release = null;
+        msg0(void, source, sel("close"));
+    }
+}
+
+fn moveDetachedDragWindowToCursor(cursor: CGPoint) void {
+    const dragged = detached_drag_window orelse return;
+    msg1(void, dragged, sel("setFrameTopLeftPoint:"), CGPoint{
+        .x = cursor.x + detached_drag_offset.x,
+        .y = cursor.y + detached_drag_offset.y,
+    });
+}
+
+fn moveDetachedDragWindow(event: Id) bool {
+    if (detached_drag_window == null) return false;
+    if (eventLocationOnScreen(event)) |cursor| {
+        moveDetachedDragWindowToCursor(cursor);
+    }
+    return true;
+}
+
+fn finishDetachedDragWindow(event: Id) bool {
+    if (detached_drag_window == null) return false;
+    if (eventScreenLocationLoose(event)) |cursor| {
+        moveDetachedDragWindowToCursor(cursor);
+    }
+    return finishDetachedDragWindowNow();
+}
+
+fn finishDetachedDragWindowNow() bool {
+    if (detached_drag_window == null) return false;
+    detached_drag_window = null;
+    detached_drag_offset = .{ .x = 0, .y = 0 };
+    if (detached_drag_close_on_release) |source| {
+        detached_drag_close_on_release = null;
+        msg0(void, source, sel("close"));
+    }
+    return true;
+}
+
+// Places the detached window so its single tab sits under the cursor at the
+// same in-tab grab point the drag started with, and inherits the source
+// window's size. All math is in global screen coordinates (y-up); the source
+// window must still be alive when this runs.
+fn detachedWindowPlacement(event: Id) ?webview_events.DetachedWindowPlacement {
+    const cursor = eventLocationOnScreen(event) orelse return null;
+    const source_window = current_drag_source_window orelse return null;
+    const state = chromeWindowStateForWindow(source_window) orelse return null;
+    const container = state.tab_container orelse return null;
+    const strip_rect = sourceTabStripScreenRect() orelse return null;
+    const source_frame = msg0(CGRect, source_window, sel("frame"));
+    const source_content = msg1(CGRect, source_window, sel("contentRectForFrameRect:"), source_frame);
+
+    const tab_area_left_inset = strip_rect.origin.x - source_frame.origin.x;
+    const top_inset = (source_frame.origin.y + source_frame.size.height) -
+        (strip_rect.origin.y + strip_rect.size.height);
+    const detached_tab_width = tabWidthForCount(1, titlebarTabAreaWidth(container));
+    const grab_dx = std.math.clamp(
+        current_drag_grab_in_button.x,
+        @as(CGFloat, 8),
+        @max(@as(CGFloat, 8), detached_tab_width - 8),
+    );
+
+    return .{
+        .top_left = .{
+            .x = cursor.x - tab_area_left_inset - grab_dx,
+            .y = cursor.y + top_inset + strip_rect.size.height / 2,
+        },
+        .width = source_content.size.width,
+        .height = source_content.size.height,
+    };
+}
+
+
+// Temporary diagnostic driven by NIMLO_TEAR_OFF_TEST=1: replays a tab drag
+// through the real handlers with synthesized events so the tear-off geometry
+// can be verified without physical mouse input.
+pub fn runTearOffSelfTest() void {
+    tear_off_self_test_active = true;
+    defer tear_off_self_test_active = false;
+
+    webview_events.emitNewTabRequested();
+
+    const window_handle = current_window orelse {
+        std.debug.print("self-test: no current window\n", .{});
+        return;
+    };
+    const document_view = current_tab_document_view orelse {
+        std.debug.print("self-test: no tab document view\n", .{});
+        return;
+    };
+    const strip_rect = screenRectForView(document_view) orelse return;
+    const button = firstTabButton(document_view) orelse {
+        std.debug.print("self-test: no tab button found\n", .{});
+        return;
+    };
+    const window_frame = msg0(CGRect, window_handle, sel("frame"));
+    std.debug.print("self-test: window frame=({d:.1},{d:.1}) {d:.0}x{d:.0}\n", .{ window_frame.origin.x, window_frame.origin.y, window_frame.size.width, window_frame.size.height });
+    std.debug.print("self-test: strip rect=({d:.1},{d:.1}) {d:.0}x{d:.0}\n", .{ strip_rect.origin.x, strip_rect.origin.y, strip_rect.size.width, strip_rect.size.height });
+
+    const start = CGPoint{
+        .x = strip_rect.origin.x + 30,
+        .y = strip_rect.origin.y + strip_rect.size.height / 2,
+    };
+    std.debug.print("self-test: mouse down at ({d:.1},{d:.1})\n", .{ start.x, start.y });
+    tabButtonMouseDown(button, null, synthesizedMouseEvent(window_handle, start, NSEventTypeLeftMouseDown));
+    tabButtonMouseDragged(null, null, synthesizedMouseEvent(window_handle, .{ .x = start.x + 12, .y = start.y }, NSEventTypeLeftMouseDragged));
+    const tear_point = CGPoint{ .x = start.x + 16, .y = start.y - 80 };
+    std.debug.print("self-test: dragging to ({d:.1},{d:.1})\n", .{ tear_point.x, tear_point.y });
+    tabButtonMouseDragged(null, null, synthesizedMouseEvent(window_handle, tear_point, NSEventTypeLeftMouseDragged));
+
+    const dragged = detached_drag_window orelse {
+        std.debug.print("self-test: FAILED, tear-off did not start\n", .{});
+        return;
+    };
+    const torn_frame = msg0(CGRect, dragged, sel("frame"));
+    std.debug.print("self-test: torn-off frame=({d:.1},{d:.1}) {d:.0}x{d:.0} top={d:.1}\n", .{ torn_frame.origin.x, torn_frame.origin.y, torn_frame.size.width, torn_frame.size.height, torn_frame.origin.y + torn_frame.size.height });
+
+    const follow_point = CGPoint{ .x = tear_point.x + 140, .y = tear_point.y - 60 };
+    std.debug.print("self-test: following to ({d:.1},{d:.1}), expected top_left=({d:.1},{d:.1})\n", .{
+        follow_point.x,
+        follow_point.y,
+        follow_point.x + detached_drag_offset.x,
+        follow_point.y + detached_drag_offset.y,
+    });
+    tabButtonMouseDragged(null, null, synthesizedMouseEvent(window_handle, follow_point, NSEventTypeLeftMouseDragged));
+    tabButtonMouseUp(button, null, synthesizedMouseEvent(window_handle, follow_point, NSEventTypeLeftMouseUp));
+    const final_frame = msg0(CGRect, dragged, sel("frame"));
+    std.debug.print("self-test: final top_left=({d:.1},{d:.1})\n", .{ final_frame.origin.x, final_frame.origin.y + final_frame.size.height });
+}
+
+fn firstTabButton(document_view: Id) Id {
+    const subviews = msg0(Id, document_view, sel("subviews"));
+    if (subviews == null) return null;
+    const count = msg0(usize, subviews, sel("count"));
+    var index: usize = 0;
+    while (index < count) : (index += 1) {
+        const view = msg1(Id, subviews, sel("objectAtIndex:"), index);
+        if (view == null) continue;
+        if (msg1(u8, view, sel("isKindOfClass:"), cls("NimloTabButton")) != 0) return view;
+    }
+    return null;
+}
+
+fn synthesizedMouseEvent(window_handle: Id, screen_point: CGPoint, event_type: usize) Id {
+    const location = msg1(CGPoint, window_handle, sel("convertPointFromScreen:"), screen_point);
+    const window_number = msg0(isize, window_handle, sel("windowNumber"));
+    return msg9(
+        Id,
+        cls("NSEvent"),
+        sel("mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:pressure:"),
+        event_type,
+        location,
+        @as(usize, 0),
+        @as(f64, 0),
+        window_number,
+        @as(Id, null),
+        @as(isize, 0),
+        @as(isize, 1),
+        @as(f32, 1.0),
+    );
 }
 
 fn showTabDropIndicator(target: TabDropTarget) void {
@@ -2931,4 +3225,34 @@ fn msg4(comptime ReturnType: type, receiver: Id, selector: Sel, arg1: anytype, a
     const Arg4 = @TypeOf(arg4);
     const Fn = *const fn (Id, Sel, Arg1, Arg2, Arg3, Arg4) callconv(.c) ReturnType;
     return @as(Fn, @ptrCast(&objc_msgSend))(receiver, selector, arg1, arg2, arg3, arg4);
+}
+
+fn msg9(
+    comptime ReturnType: type,
+    receiver: Id,
+    selector: Sel,
+    arg1: anytype,
+    arg2: anytype,
+    arg3: anytype,
+    arg4: anytype,
+    arg5: anytype,
+    arg6: anytype,
+    arg7: anytype,
+    arg8: anytype,
+    arg9: anytype,
+) ReturnType {
+    const Fn = *const fn (
+        Id,
+        Sel,
+        @TypeOf(arg1),
+        @TypeOf(arg2),
+        @TypeOf(arg3),
+        @TypeOf(arg4),
+        @TypeOf(arg5),
+        @TypeOf(arg6),
+        @TypeOf(arg7),
+        @TypeOf(arg8),
+        @TypeOf(arg9),
+    ) callconv(.c) ReturnType;
+    return @as(Fn, @ptrCast(&objc_msgSend))(receiver, selector, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9);
 }

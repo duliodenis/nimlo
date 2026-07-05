@@ -5,12 +5,14 @@ pub const StubWindow = struct {
     title: []const u8,
     width: u32,
     height: u32,
+    top_left: ?window.ScreenPoint,
 
     pub fn create(options: window.WindowOptions) !StubWindow {
         return .{
             .title = options.title,
             .width = options.width,
             .height = options.height,
+            .top_left = options.top_left,
         };
     }
 
@@ -25,6 +27,7 @@ pub const StubWindow = struct {
             self.width,
             self.height,
         });
+        _ = self.top_left;
         // TODO(app shell): add a platform window implementation for this OS.
     }
 

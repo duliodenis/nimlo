@@ -43,8 +43,23 @@ pub const TabMoveRequest = struct {
     tab: DetachedTab,
 };
 
+pub const ScreenPoint = struct {
+    x: f64,
+    y: f64,
+};
+
+pub const DetachedWindowPlacement = struct {
+    top_left: ScreenPoint,
+    width: f64,
+    height: f64,
+};
+
 pub const TabDetachRequest = struct {
     source_context: *anyopaque,
+    placement: ?DetachedWindowPlacement = null,
+    // When true the app must not close the emptied source window yet; the
+    // chrome keeps it alive (hidden) until the drag ends and closes it then.
+    defer_empty_source_close: bool = false,
     tab: DetachedTab,
 };
 
@@ -67,7 +82,7 @@ pub const EventSink = struct {
     on_tab_closed_requested: ?*const fn (context: *anyopaque, tab_id: u64) void = null,
     on_tab_reordered_requested: ?*const fn (context: *anyopaque, from_index: usize, to_index: usize) void = null,
     on_active_tab_detach_requested: ?*const fn (context: *anyopaque) void = null,
-    on_tab_detach_requested: ?*const fn (context: *anyopaque, tab_id: u64) void = null,
+    on_tab_detach_requested: ?*const fn (context: *anyopaque, tab_id: u64, placement: ?DetachedWindowPlacement, defer_empty_source_close: bool) ?*anyopaque = null,
     on_active_tab_move_to_existing_window_requested: ?*const fn (context: *anyopaque) void = null,
     on_tab_move_to_window_requested: ?*const fn (context: *anyopaque, tab_id: u64, destination_window_handle: ?*anyopaque, insertion_index: ?usize) void = null,
     on_active_tab_back_requested: ?*const fn (context: *anyopaque) void = null,
@@ -88,7 +103,7 @@ pub const AppSink = struct {
     on_new_window_requested: ?*const fn (context: *anyopaque) void = null,
     on_window_closed: ?*const fn (context: *anyopaque, window_handle: ?*anyopaque) void = null,
     on_tab_detached: ?*const fn (context: *anyopaque, tab: DetachedTab) void = null,
-    on_tab_detached_from_source: ?*const fn (context: *anyopaque, request: TabDetachRequest) void = null,
+    on_tab_detached_from_source: ?*const fn (context: *anyopaque, request: TabDetachRequest) ?*anyopaque = null,
     on_tab_move_target_available: ?*const fn (context: *anyopaque, source_context: *anyopaque, destination_window_handle: ?*anyopaque) bool = null,
     on_tab_moved_to_existing_window: ?*const fn (context: *anyopaque, request: TabMoveRequest) void = null,
 };
@@ -267,12 +282,13 @@ pub fn emitActiveTabDetachRequested() void {
     }
 }
 
-pub fn emitTabDetachRequested(tab_id: u64) void {
+pub fn emitTabDetachRequested(tab_id: u64, placement: ?DetachedWindowPlacement, defer_empty_source_close: bool) ?*anyopaque {
     if (current_sink) |sink| {
         if (sink.on_tab_detach_requested) |callback| {
-            callback(sink.context, tab_id);
+            return callback(sink.context, tab_id, placement, defer_empty_source_close);
         }
     }
+    return null;
 }
 
 pub fn emitActiveTabMoveToExistingWindowRequested() void {
@@ -361,12 +377,13 @@ pub fn emitTabDetached(tab: DetachedTab) void {
     }
 }
 
-pub fn emitTabDetachedFromSource(request: TabDetachRequest) void {
+pub fn emitTabDetachedFromSource(request: TabDetachRequest) ?*anyopaque {
     if (current_app_sink) |sink| {
         if (sink.on_tab_detached_from_source) |callback| {
-            callback(sink.context, request);
+            return callback(sink.context, request);
         }
     }
+    return null;
 }
 
 pub fn emitTabMoveTargetAvailable(source_context: *anyopaque, destination_window_handle: ?*anyopaque) bool {

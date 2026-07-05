@@ -477,12 +477,14 @@ pub const Browser = struct {
         webview_events.emitTabDetached(transferPayloadFromTab(detached));
     }
 
-    fn handleTabDetachRequested(context: *anyopaque, tab_id: u64) void {
+    fn handleTabDetachRequested(context: *anyopaque, tab_id: u64, placement: ?webview_events.DetachedWindowPlacement, defer_empty_source_close: bool) ?*anyopaque {
         const self: *Browser = @ptrCast(@alignCast(context));
-        const detached = self.detachTabForWindowTransfer(tab_id, true) orelse return;
+        const detached = self.detachTabForWindowTransfer(tab_id, true) orelse return null;
 
-        webview_events.emitTabDetachedFromSource(.{
+        return webview_events.emitTabDetachedFromSource(.{
             .source_context = self,
+            .placement = placement,
+            .defer_empty_source_close = defer_empty_source_close,
             .tab = transferPayloadFromTab(detached),
         });
     }
@@ -874,13 +876,14 @@ fn recordDetachedTab(context: *anyopaque, tab: webview_events.DetachedTab) void 
     recorder.is_private = tab.is_private;
 }
 
-fn recordDetachedTabFromSource(context: *anyopaque, request: webview_events.TabDetachRequest) void {
+fn recordDetachedTabFromSource(context: *anyopaque, request: webview_events.TabDetachRequest) ?*anyopaque {
     const recorder: *DetachedTabRecorder = @ptrCast(@alignCast(context));
     recorder.count += 1;
     recorder.source_context = request.source_context;
     recorder.title = request.tab.title;
     recorder.url = request.tab.url;
     recorder.is_private = request.tab.is_private;
+    return null;
 }
 
 fn recordTabMoveTargetAvailable(context: *anyopaque, source_context: *anyopaque, destination_window_handle: ?*anyopaque) bool {
@@ -1854,7 +1857,7 @@ test "targeted tab detach command can detach final source tab" {
     browser.tabs.findTab(only).?.current_url = "https://cnn.example";
     browser.tabs.findTab(only).?.title = "CNN";
 
-    webview_events.emitTabDetachRequested(only);
+    _ = webview_events.emitTabDetachRequested(only, null, false);
 
     try std.testing.expectEqual(@as(usize, 1), recorder.count);
     try std.testing.expectEqual(@as(?*anyopaque, @ptrCast(&browser)), recorder.source_context);
@@ -1889,7 +1892,7 @@ test "targeted tab detach command removes requested inactive tab and preserves a
     webview_events.emitNewTabRequested();
     const third = browser.tabs.active_tab_id.?;
 
-    webview_events.emitTabDetachRequested(second);
+    _ = webview_events.emitTabDetachRequested(second, null, false);
 
     try std.testing.expectEqual(@as(usize, 1), recorder.count);
     try std.testing.expectEqual(@as(?*anyopaque, @ptrCast(&browser)), recorder.source_context);
@@ -1922,7 +1925,7 @@ test "targeted tab detach command ignores unknown tab" {
     webview_events.emitNewTabRequested();
     const second = browser.tabs.active_tab_id.?;
 
-    webview_events.emitTabDetachRequested(99);
+    _ = webview_events.emitTabDetachRequested(99, null, false);
 
     try std.testing.expectEqual(@as(usize, 0), recorder.count);
     try std.testing.expectEqual(@as(usize, 2), browser.tabs.len());

@@ -942,11 +942,25 @@ fn updateTitlebarContainerLayout() void {
     }
 }
 
-fn handleTabsChanged(_: *anyopaque, tabs: []const webview_events.TabSnapshot) void {
+fn handleTabsChanged(context: *anyopaque, tabs: []const webview_events.TabSnapshot) void {
+    // The active chrome sink's owner is the window this publish is meant
+    // for; it can differ from current_window when tabs move across windows
+    // before the key-window notification lands (e.g. drag re-docking).
+    if (chromeWindowForTarget(context)) |owner| {
+        if (owner != current_window) activateChromeWindowState(owner);
+    }
     current_tab_snapshots.clearRetainingCapacity();
     current_tab_snapshots.appendSlice(std.heap.page_allocator, tabs) catch return;
     updateBookmarkControlForActiveTab();
     renderTitlebarTabs(tabs) catch return;
+}
+
+fn chromeWindowForTarget(context: *anyopaque) ?Id {
+    const target: Id = context;
+    const address_field = getIvar(target, "addressField") orelse return null;
+    const window = msg0(Id, address_field, sel("window"));
+    if (window == null) return null;
+    return window;
 }
 
 fn handleAddressBarFocusRequested(context: *anyopaque) void {
@@ -1493,7 +1507,7 @@ fn tabButtonMouseDragged(_: Id, _: Sel, event: Id) callconv(.c) void {
 }
 
 fn tabButtonMouseUp(button: Id, _: Sel, event: Id) callconv(.c) void {
-    if (finishDetachedDragWindow(event)) return;
+    if (releaseDetachedDragWindow(event)) return;
     const tab_id = current_drag_tab_id orelse tabIdFromSender(button) orelse return;
     const should_activate = !current_drag_has_moved;
     const destination_window = current_drag_destination_window;
@@ -1573,10 +1587,14 @@ const TabDropTarget = struct {
 
 fn tabDropTargetForEvent(event: Id) ?TabDropTarget {
     const screen_point = eventLocationOnScreen(event) orelse return null;
+    return dropTargetAtScreenPoint(screen_point, current_drag_source_window, null);
+}
+
+fn dropTargetAtScreenPoint(screen_point: CGPoint, exclude_a: Id, exclude_b: Id) ?TabDropTarget {
     saveActiveChromeWindowState();
 
     for (chrome_window_states.items) |*state| {
-        if (state.window == null or state.window == current_drag_source_window) continue;
+        if (state.window == null or state.window == exclude_a or state.window == exclude_b) continue;
         const document_view = state.tab_document_view orelse continue;
         const rect = screenRectForView(document_view) orelse continue;
         if (!pointInRect(screen_point, rect)) continue;
@@ -1589,6 +1607,13 @@ fn tabDropTargetForEvent(event: Id) ?TabDropTarget {
     }
 
     return null;
+}
+
+// Dock target for a torn-off window drag: another window's tab strip under
+// the cursor, ignoring the dragged window itself and a hidden source window
+// awaiting its deferred close.
+fn detachedDockTargetAtPoint(screen_point: CGPoint) ?TabDropTarget {
+    return dropTargetAtScreenPoint(screen_point, detached_drag_window, detached_drag_close_on_release);
 }
 
 fn eventIsInSourceTabStrip(event: Id) bool {
@@ -1673,12 +1698,10 @@ fn runDetachedWindowDragLoop() void {
 
         const event_type = msg0(usize, event, sel("type"));
         if (event_type == NSEventTypeLeftMouseUp) {
-            _ = finishDetachedDragWindow(event);
+            _ = releaseDetachedDragWindow(event);
             return;
         }
-        if (eventScreenLocationLoose(event)) |cursor| {
-            moveDetachedDragWindowToCursor(cursor);
-        }
+        _ = moveDetachedDragWindow(event);
     }
     _ = finishDetachedDragWindowNow();
 }
@@ -1715,18 +1738,59 @@ fn moveDetachedDragWindowToCursor(cursor: CGPoint) void {
 
 fn moveDetachedDragWindow(event: Id) bool {
     if (detached_drag_window == null) return false;
-    if (eventLocationOnScreen(event)) |cursor| {
+    if (eventScreenLocationLoose(event)) |cursor| {
         moveDetachedDragWindowToCursor(cursor);
+        updateDetachedDockFeedback(cursor);
     }
     return true;
 }
 
-fn finishDetachedDragWindow(event: Id) bool {
-    if (detached_drag_window == null) return false;
+// While the torn-off window hovers another window's tab strip, show that
+// strip's insertion indicator and fade the dragged window so the indicator
+// underneath stays visible.
+fn updateDetachedDockFeedback(cursor: CGPoint) void {
+    const dragged = detached_drag_window orelse return;
+    if (detachedDockTargetAtPoint(cursor)) |target| {
+        showTabDropIndicator(target);
+        msg1(void, dragged, sel("setAlphaValue:"), @as(CGFloat, 0.55));
+    } else {
+        hideAllTabDropIndicators();
+        msg1(void, dragged, sel("setAlphaValue:"), @as(CGFloat, 1));
+    }
+}
+
+// Ends a torn-off window drag: docks the tab into the strip under the cursor
+// when there is one, otherwise leaves the window at its final position.
+fn releaseDetachedDragWindow(event: Id) bool {
+    const dragged = detached_drag_window orelse return false;
+    hideAllTabDropIndicators();
+    msg1(void, dragged, sel("setAlphaValue:"), @as(CGFloat, 1));
+
     if (eventScreenLocationLoose(event)) |cursor| {
+        if (detachedDockTargetAtPoint(cursor)) |target| {
+            dockDetachedDragWindow(dragged, target);
+            return finishDetachedDragWindowNow();
+        }
         moveDetachedDragWindowToCursor(cursor);
     }
     return finishDetachedDragWindowNow();
+}
+
+// Merges the torn-off window's single tab into the target strip via the
+// existing move-to-window flow; the emptied dragged window is closed by the
+// app controller as part of that move.
+fn dockDetachedDragWindow(dragged: Id, target: TabDropTarget) void {
+    const tab_id = singleTabIdForWindow(dragged) orelse return;
+    webview_events.activateSinkForOwner(dragged);
+    webview_events.activateChromeSinkForOwner(dragged);
+    webview_events.emitTabMoveToWindowRequested(tab_id, target.window, target.insertion_index);
+}
+
+fn singleTabIdForWindow(window_handle: Id) ?u64 {
+    saveActiveChromeWindowState();
+    const state = chromeWindowStateForWindow(window_handle) orelse return null;
+    if (state.tab_snapshots.items.len == 0) return null;
+    return state.tab_snapshots.items[0].id;
 }
 
 fn finishDetachedDragWindowNow() bool {
@@ -1829,6 +1893,57 @@ pub fn runTearOffSelfTest() void {
     tabButtonMouseUp(button, null, synthesizedMouseEvent(window_handle, follow_point, NSEventTypeLeftMouseUp));
     const final_frame = msg0(CGRect, dragged, sel("frame"));
     std.debug.print("self-test: final top_left=({d:.1},{d:.1})\n", .{ final_frame.origin.x, final_frame.origin.y + final_frame.size.height });
+
+    // Phase 2: tear off the source's remaining tab (final-tab path) and
+    // re-dock it onto the window detached in phase 1.
+    saveActiveChromeWindowState();
+    const source_state = chromeWindowStateForWindow(window_handle) orelse {
+        std.debug.print("self-test: phase2 FAILED, no source state\n", .{});
+        return;
+    };
+    const source_document = source_state.tab_document_view orelse return;
+    const source_button = firstTabButton(source_document) orelse {
+        std.debug.print("self-test: phase2 FAILED, no source tab button\n", .{});
+        return;
+    };
+    const source_strip = screenRectForView(source_document) orelse return;
+    const phase2_start = CGPoint{
+        .x = source_strip.origin.x + 30,
+        .y = source_strip.origin.y + source_strip.size.height / 2,
+    };
+    std.debug.print("self-test: phase2 mouse down at ({d:.1},{d:.1})\n", .{ phase2_start.x, phase2_start.y });
+    tabButtonMouseDown(source_button, null, synthesizedMouseEvent(window_handle, phase2_start, NSEventTypeLeftMouseDown));
+    tabButtonMouseDragged(null, null, synthesizedMouseEvent(window_handle, .{ .x = phase2_start.x + 12, .y = phase2_start.y }, NSEventTypeLeftMouseDragged));
+    tabButtonMouseDragged(null, null, synthesizedMouseEvent(window_handle, .{ .x = phase2_start.x + 16, .y = phase2_start.y - 80 }, NSEventTypeLeftMouseDragged));
+    if (detached_drag_window == null) {
+        std.debug.print("self-test: phase2 FAILED, tear-off did not start\n", .{});
+        return;
+    }
+
+    saveActiveChromeWindowState();
+    const dock_state = chromeWindowStateForWindow(dragged) orelse {
+        std.debug.print("self-test: phase2 FAILED, no dock target state\n", .{});
+        return;
+    };
+    const dock_document = dock_state.tab_document_view orelse return;
+    const dock_strip = screenRectForView(dock_document) orelse return;
+    const dock_point = CGPoint{
+        .x = dock_strip.origin.x + dock_strip.size.width / 2,
+        .y = dock_strip.origin.y + dock_strip.size.height / 2,
+    };
+    std.debug.print("self-test: phase2 dock point=({d:.1},{d:.1}) target_found={any}\n", .{
+        dock_point.x,
+        dock_point.y,
+        detachedDockTargetAtPoint(dock_point) != null,
+    });
+    tabButtonMouseDragged(null, null, synthesizedMouseEvent(window_handle, dock_point, NSEventTypeLeftMouseDragged));
+    tabButtonMouseUp(source_button, null, synthesizedMouseEvent(window_handle, dock_point, NSEventTypeLeftMouseUp));
+
+    std.debug.print("self-test: phase2 done tabs={d} states={d} drag_active={any}\n", .{
+        current_tab_snapshots.items.len,
+        chrome_window_states.items.len,
+        detached_drag_window != null,
+    });
 }
 
 fn firstTabButton(document_view: Id) Id {

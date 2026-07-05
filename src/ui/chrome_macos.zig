@@ -68,6 +68,9 @@ const NSImageScaleProportionallyDown: isize = 1;
 const NSImageSymbolScaleMedium: isize = 2;
 const WKNavigationActionPolicyCancel: isize = 0;
 const WKNavigationActionPolicyAllow: isize = 1;
+const WKNavigationActionPolicyDownload: isize = 2;
+const WKNavigationResponsePolicyAllow: isize = 1;
+const WKNavigationResponsePolicyDownload: isize = 2;
 const NSLayoutAttributeLeft: isize = 1;
 const NSTextAlignmentCenter: isize = 1;
 const NSUTF8StringEncoding: usize = 4;
@@ -137,6 +140,23 @@ const NavigationDecisionHandler = extern struct {
     descriptor: ?*anyopaque,
 };
 
+// Same ObjC block layout as NavigationDecisionHandler, but for
+// WKDownloadDelegate's destination completion handler, which takes an NSURL.
+const DownloadDestinationHandler = extern struct {
+    isa: ?*anyopaque,
+    flags: c_int,
+    reserved: c_int,
+    invoke: *const fn (*DownloadDestinationHandler, Id) callconv(.c) void,
+    descriptor: ?*anyopaque,
+};
+
+const PendingDownload = struct {
+    download: Id,
+    record_id: u64,
+    owner_window: Id,
+    file_path: ?[:0]u8 = null,
+};
+
 var current_address_field: Id = null;
 var current_bookmark_button: Id = null;
 var current_bookmark_menu_item: Id = null;
@@ -167,6 +187,7 @@ var detached_drag_window: Id = null;
 var detached_drag_offset: CGPoint = .{ .x = 0, .y = 0 };
 var detached_drag_close_on_release: Id = null;
 var tear_off_self_test_active = false;
+var pending_downloads: std.ArrayList(PendingDownload) = .empty;
 var webview_chrome_states: std.ArrayList(WebViewChromeState) = .empty;
 var favicon_cache: std.ArrayList(CachedFavicon) = .empty;
 var rendered_tab_controls: std.ArrayList(RenderedTabControl) = .empty;
@@ -336,6 +357,10 @@ pub fn noteInternalLoadForUrl(webview: Id, url: []const u8) void {
     }
     if (std.mem.eql(u8, url, "nimlo://bookmarks")) {
         noteInternalPageLoad(webview, "nimlo://bookmarks", "Bookmarks", "bookmark", "Bookmarks");
+        return;
+    }
+    if (std.mem.eql(u8, url, "nimlo://downloads")) {
+        noteInternalPageLoad(webview, "nimlo://downloads", "Downloads", "arrow.down.circle", "Downloads");
         return;
     }
 
@@ -999,6 +1024,8 @@ fn defaultFaviconForTab(tab: webview_events.TabSnapshot) Id {
     if (std.mem.eql(u8, tab.url, "nimlo://start")) return systemSymbol("sparkles", "Nimlo");
     if (std.mem.eql(u8, tab.url, "nimlo://about")) return systemSymbol("info.circle", "About Nimlo");
     if (std.mem.eql(u8, tab.url, "nimlo://bookmarks")) return systemSymbol("bookmark", "Bookmarks");
+    if (std.mem.eql(u8, tab.url, "nimlo://history")) return systemSymbol("clock.arrow.circlepath", "History");
+    if (std.mem.eql(u8, tab.url, "nimlo://downloads")) return systemSymbol("arrow.down.circle", "Downloads");
     return defaultFavicon();
 }
 
@@ -1124,6 +1151,7 @@ fn installCommandMenus(target: Id) void {
         addMenuItem(navigate_menu, "Bookmarks", sel("showBookmarks:"), "b", NSEventModifierFlagCommand | NSEventModifierFlagOption, target);
         msg1(void, navigate_menu, sel("addItem:"), msg0(Id, cls("NSMenuItem"), sel("separatorItem")));
         addMenuItem(navigate_menu, "History", sel("showHistory:"), "y", NSEventModifierFlagCommand, target);
+        addMenuItem(navigate_menu, "Downloads", sel("showDownloads:"), "j", NSEventModifierFlagCommand | NSEventModifierFlagShift, target);
         addMenuItem(navigate_menu, "Clear History", sel("clearHistory:"), "", 0, target);
         msg1(void, navigate_item, sel("setTitle:"), nsString("Navigate"));
         msg1(void, navigate_item, sel("setSubmenu:"), navigate_menu);
@@ -1287,6 +1315,12 @@ fn installAddressBarTargetClass() void {
     );
     _ = c.class_addMethod(
         target_class,
+        c.sel_registerName("showDownloads:"),
+        @ptrCast(&showDownloads),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
         c.sel_registerName("toggleBookmarkCurrentPage:"),
         @ptrCast(&toggleBookmarkCurrentPage),
         "v@:@",
@@ -1380,6 +1414,42 @@ fn installAddressBarTargetClass() void {
         c.sel_registerName("webView:decidePolicyForNavigationAction:decisionHandler:"),
         @ptrCast(&decideNavigationPolicy),
         "v@:@@@?",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("webView:decidePolicyForNavigationResponse:decisionHandler:"),
+        @ptrCast(&decideNavigationResponsePolicy),
+        "v@:@@@?",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("webView:navigationAction:didBecomeDownload:"),
+        @ptrCast(&navigationActionDidBecomeDownload),
+        "v@:@@@",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("webView:navigationResponse:didBecomeDownload:"),
+        @ptrCast(&navigationResponseDidBecomeDownload),
+        "v@:@@@",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("download:decideDestinationUsingResponse:suggestedFilename:completionHandler:"),
+        @ptrCast(&decideDownloadDestination),
+        "v@:@@@@?",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("downloadDidFinish:"),
+        @ptrCast(&downloadDidFinish),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("download:didFailWithError:resumeData:"),
+        @ptrCast(&downloadDidFail),
+        "v@:@@@",
     );
     _ = c.class_addMethod(
         target_class,
@@ -2213,6 +2283,13 @@ fn showHistory(target: Id, _: Sel, sender: Id) callconv(.c) void {
     std.debug.print("history page requested.\n", .{});
 }
 
+fn showDownloads(target: Id, _: Sel, sender: Id) callconv(.c) void {
+    _ = target;
+    activateChromeWindowStateForSender(sender);
+    webview_events.emitUrlOpenRequested("nimlo://downloads");
+    std.debug.print("downloads page requested.\n", .{});
+}
+
 fn toggleBookmarkCurrentPage(target: Id, _: Sel, sender: Id) callconv(.c) void {
     _ = target;
     activateChromeWindowStateForSender(sender);
@@ -2695,6 +2772,30 @@ fn decideNavigationPolicy(_: Id, _: Sel, webview: Id, navigation_action: Id, dec
         return;
     }
 
+    if (webViewIsInternal(webview) and std.mem.startsWith(u8, target_url, "https://nimlo.internal/downloads/open?")) {
+        openDownloadPathFromRequest(target_url, false);
+        decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
+        return;
+    }
+
+    if (webViewIsInternal(webview) and std.mem.startsWith(u8, target_url, "https://nimlo.internal/downloads/reveal?")) {
+        openDownloadPathFromRequest(target_url, true);
+        decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
+        return;
+    }
+
+    if (webViewIsInternal(webview) and std.mem.startsWith(u8, target_url, "https://nimlo.internal/downloads/remove?")) {
+        webview_events.emitDownloadsRemoveRequested(webview, target_url);
+        decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
+        return;
+    }
+
+    if (webViewIsInternal(webview) and std.mem.eql(u8, target_url, "https://nimlo.internal/downloads/clear")) {
+        webview_events.emitDownloadsClearRequested(webview);
+        decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
+        return;
+    }
+
     if (webViewIsInternal(webview) and isExternalWebUrl(target_url)) {
         webview_events.emitUrlOpenRequested(target_url);
         decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
@@ -2708,7 +2809,180 @@ fn decideNavigationPolicy(_: Id, _: Sel, webview: Id, navigation_action: Id, dec
         }
     }
 
+    if (navigation_action != null and msg0(u8, navigation_action, sel("shouldPerformDownload")) != 0) {
+        decision_handler.invoke(decision_handler, WKNavigationActionPolicyDownload);
+        return;
+    }
+
     decision_handler.invoke(decision_handler, WKNavigationActionPolicyAllow);
+}
+
+fn decideNavigationResponsePolicy(_: Id, _: Sel, _: Id, navigation_response: Id, decision_handler: *NavigationDecisionHandler) callconv(.c) void {
+    // Only main-frame responses that WebKit cannot display become downloads;
+    // subframe resources keep the pre-existing allow behavior.
+    const can_show = navigation_response == null or msg0(u8, navigation_response, sel("canShowMIMEType")) != 0;
+    const main_frame = navigation_response != null and msg0(u8, navigation_response, sel("isForMainFrame")) != 0;
+    const policy = if (!can_show and main_frame) WKNavigationResponsePolicyDownload else WKNavigationResponsePolicyAllow;
+    decision_handler.invoke(decision_handler, policy);
+}
+
+fn navigationActionDidBecomeDownload(target: Id, _: Sel, webview: Id, _: Id, download: Id) callconv(.c) void {
+    beginTrackedDownload(target, webview, download);
+}
+
+fn navigationResponseDidBecomeDownload(target: Id, _: Sel, webview: Id, _: Id, download: Id) callconv(.c) void {
+    beginTrackedDownload(target, webview, download);
+}
+
+fn beginTrackedDownload(target: Id, webview: Id, download: Id) void {
+    if (download == null) return;
+    msg1(void, download, sel("setDelegate:"), target);
+    pending_downloads.append(std.heap.page_allocator, .{
+        .download = download,
+        .record_id = 0,
+        .owner_window = if (webview != null) msg0(Id, webview, sel("window")) else null,
+    }) catch {};
+}
+
+fn pendingDownloadIndex(download: Id) ?usize {
+    for (pending_downloads.items, 0..) |entry, index| {
+        if (entry.download == download) return index;
+    }
+    return null;
+}
+
+fn decideDownloadDestination(_: Id, _: Sel, download: Id, _: Id, suggested_filename: Id, completion_handler: *DownloadDestinationHandler) callconv(.c) void {
+    const allocator = std.heap.page_allocator;
+    const filename_raw = if (suggested_filename != null) msg0(?[*:0]const u8, suggested_filename, sel("UTF8String")) else null;
+    const filename: []const u8 = if (filename_raw) |value| std.mem.span(value) else "download";
+
+    const destination = uniqueDownloadDestinationPath(allocator, filename) catch {
+        completion_handler.invoke(completion_handler, null);
+        return;
+    };
+
+    const destination_url = msg1(Id, cls("NSURL"), sel("fileURLWithPath:"), nsString(destination));
+    completion_handler.invoke(completion_handler, destination_url);
+
+    const index = pendingDownloadIndex(download) orelse {
+        allocator.free(destination);
+        return;
+    };
+    const entry = &pending_downloads.items[index];
+    entry.file_path = destination;
+
+    const request = msg0(Id, download, sel("originalRequest"));
+    const url = if (request != null) msg0(Id, request, sel("URL")) else null;
+    const absolute = if (url != null) msg0(Id, url, sel("absoluteString")) else null;
+    const url_raw = if (absolute != null) msg0(?[*:0]const u8, absolute, sel("UTF8String")) else null;
+    const download_url: []const u8 = if (url_raw) |value| std.mem.span(value) else "";
+
+    entry.record_id = webview_events.emitDownloadStartedForOwner(entry.owner_window, .{
+        .url = download_url,
+        .filename = std.fs.path.basename(destination),
+        .file_path = destination,
+        .started_at = std.Io.Clock.real.now(std.Options.debug_io).toMilliseconds(),
+    });
+}
+
+// Builds "~/Downloads/<filename>", appending " (2)", " (3)", ... before the
+// extension until the path does not exist. WKDownload refuses to overwrite
+// existing files, so the destination must be free.
+fn uniqueDownloadDestinationPath(allocator: std.mem.Allocator, filename: []const u8) ![:0]u8 {
+    const home = std.c.getenv("HOME") orelse return error.NoHomeDirectory;
+    const home_slice = std.mem.span(home);
+    const safe_name = if (filename.len == 0 or std.mem.eql(u8, filename, ".") or std.mem.indexOfScalar(u8, filename, '/') != null)
+        "download"
+    else
+        filename;
+
+    var candidate = try std.fmt.allocPrintSentinel(allocator, "{s}/Downloads/{s}", .{ home_slice, safe_name }, 0);
+    const extension = std.fs.path.extension(safe_name);
+    const stem = safe_name[0 .. safe_name.len - extension.len];
+
+    var counter: u32 = 2;
+    while (fileExistsAtPath(candidate)) : (counter += 1) {
+        allocator.free(candidate);
+        if (counter > 1000) return error.TooManyDownloadNameCollisions;
+        candidate = try std.fmt.allocPrintSentinel(allocator, "{s}/Downloads/{s} ({d}){s}", .{ home_slice, stem, counter, extension }, 0);
+    }
+    return candidate;
+}
+
+fn fileExistsAtPath(path: [:0]const u8) bool {
+    const file_manager = msg0(Id, cls("NSFileManager"), sel("defaultManager"));
+    if (file_manager == null) return false;
+    return msg1(u8, file_manager, sel("fileExistsAtPath:"), nsString(path)) != 0;
+}
+
+fn downloadDidFinish(_: Id, _: Sel, download: Id) callconv(.c) void {
+    const index = pendingDownloadIndex(download) orelse return;
+    const entry = pending_downloads.orderedRemove(index);
+    defer if (entry.file_path) |path| std.heap.page_allocator.free(path);
+
+    if (entry.record_id == 0) return;
+    const size = if (entry.file_path) |path| downloadedFileSize(path) else 0;
+    webview_events.emitDownloadFinishedForOwner(entry.owner_window, entry.record_id, size);
+}
+
+fn downloadDidFail(_: Id, _: Sel, download: Id, _: Id, _: Id) callconv(.c) void {
+    const index = pendingDownloadIndex(download) orelse return;
+    const entry = pending_downloads.orderedRemove(index);
+    defer if (entry.file_path) |path| std.heap.page_allocator.free(path);
+
+    if (entry.record_id == 0) return;
+    webview_events.emitDownloadFailedForOwner(entry.owner_window, entry.record_id);
+}
+
+fn downloadedFileSize(path: [:0]const u8) u64 {
+    const file_manager = msg0(Id, cls("NSFileManager"), sel("defaultManager"));
+    if (file_manager == null) return 0;
+    const attributes = msg2(Id, file_manager, sel("attributesOfItemAtPath:error:"), nsString(path), @as(Id, null));
+    if (attributes == null) return 0;
+    return msg0(u64, attributes, sel("fileSize"));
+}
+
+fn openDownloadPathFromRequest(request_url: []const u8, reveal: bool) void {
+    const marker = "?path=";
+    const marker_index = std.mem.indexOf(u8, request_url, marker) orelse return;
+    const encoded = request_url[marker_index + marker.len ..];
+    if (encoded.len == 0) return;
+
+    const allocator = std.heap.page_allocator;
+    const path = percentDecodeAllocSentinel(allocator, encoded) catch return;
+    defer allocator.free(path);
+    if (path.len == 0 or path[0] != '/') return;
+
+    const workspace = msg0(Id, cls("NSWorkspace"), sel("sharedWorkspace"));
+    if (workspace == null) return;
+    if (reveal) {
+        _ = msg2(u8, workspace, sel("selectFile:inFileViewerRootedAtPath:"), nsString(path), nsString(""));
+    } else {
+        const file_url = msg1(Id, cls("NSURL"), sel("fileURLWithPath:"), nsString(path));
+        if (file_url == null) return;
+        _ = msg1(u8, workspace, sel("openURL:"), file_url);
+    }
+}
+
+fn percentDecodeAllocSentinel(allocator: std.mem.Allocator, text: []const u8) ![:0]u8 {
+    var decoded: std.ArrayList(u8) = .empty;
+    defer decoded.deinit(allocator);
+
+    var index: usize = 0;
+    while (index < text.len) {
+        const byte = text[index];
+        if (byte == '%' and index + 3 <= text.len) {
+            if (std.fmt.parseInt(u8, text[index + 1 .. index + 3], 16)) |value| {
+                try decoded.append(allocator, value);
+                index += 3;
+                continue;
+            } else |_| {}
+        }
+        try decoded.append(allocator, if (byte == '+') ' ' else byte);
+        index += 1;
+    }
+
+    return allocator.dupeZ(u8, decoded.items);
 }
 
 fn isExternalWebUrl(url: []const u8) bool {
@@ -3166,6 +3440,8 @@ fn titleFromWebViewUrl(webview: Id) ?[]const u8 {
     if (std.mem.eql(u8, url, "nimlo://start")) return "Nimlo";
     if (std.mem.eql(u8, url, "nimlo://about")) return "About Nimlo";
     if (std.mem.eql(u8, url, "nimlo://bookmarks")) return "Bookmarks";
+    if (std.mem.eql(u8, url, "nimlo://history")) return "History";
+    if (std.mem.eql(u8, url, "nimlo://downloads")) return "Downloads";
 
     const scheme_end = std.mem.indexOf(u8, url, "://") orelse return url;
     const host_start = scheme_end + 3;

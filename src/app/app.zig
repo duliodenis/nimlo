@@ -3,8 +3,6 @@ const browser = @import("../browser/browser.zig");
 const tab_model = @import("../browser/tab.zig");
 const preferences = @import("../storage/preferences.zig");
 const private_mode = @import("../privacy/private_mode.zig");
-const about_page = @import("../ui/about_page.zig");
-const start_page = @import("../ui/start_page.zig");
 const window = @import("window.zig");
 const webview = @import("../webview/webview_adapter.zig");
 const webview_events = @import("../webview/webview_events.zig");
@@ -39,6 +37,7 @@ const AppController = struct {
     data_dir_path: []const u8,
     history_path: []const u8,
     bookmarks_path: []const u8,
+    downloads_path: []const u8,
     sessions: std.ArrayList(*BrowserWindowSession),
 
     fn init(allocator: std.mem.Allocator) !AppController {
@@ -52,6 +51,9 @@ const AppController = struct {
         const bookmarks_path = try defaultBookmarksPersistencePath(allocator);
         errdefer allocator.free(bookmarks_path);
 
+        const downloads_path = try defaultDownloadsPersistencePath(allocator);
+        errdefer allocator.free(downloads_path);
+
         return .{
             .allocator = allocator,
             .config = preferences.Preferences.default(),
@@ -59,6 +61,7 @@ const AppController = struct {
             .data_dir_path = data_dir_path,
             .history_path = history_path,
             .bookmarks_path = bookmarks_path,
+            .downloads_path = downloads_path,
             .sessions = .empty,
         };
     }
@@ -69,6 +72,7 @@ const AppController = struct {
             self.allocator.destroy(session);
         }
         self.sessions.deinit(self.allocator);
+        self.allocator.free(self.downloads_path);
         self.allocator.free(self.bookmarks_path);
         self.allocator.free(self.history_path);
         self.allocator.free(self.data_dir_path);
@@ -95,12 +99,13 @@ const AppController = struct {
 
         try session.core.enableHistoryPersistence(self.history_path);
         try session.core.enableBookmarkPersistence(self.bookmarks_path);
+        try session.core.enableDownloadPersistence(self.downloads_path);
         if (initial_tab) |tab| {
             try seedInitialTab(&session.core, tab);
         }
         try session.window.attachWebView(&session.engine);
         try session.core.start();
-        try loadInitialUrl(&session.engine, if (initial_tab) |tab| tab.url else self.config.homepage_url);
+        try session.core.loadActiveTab();
         try session.window.present();
         session.core.publishChromeState();
 
@@ -256,25 +261,16 @@ fn seedInitialTab(core: *browser.Browser, tab: webview_events.DetachedTab) !void
     }
 }
 
-fn loadInitialUrl(engine: *webview.WebViewAdapter, url: []const u8) !void {
-    if (std.mem.eql(u8, url, "nimlo://start")) {
-        try engine.loadHtml(start_page.html, url);
-        return;
-    }
-    if (std.mem.eql(u8, url, "nimlo://about")) {
-        try engine.loadHtml(about_page.html, url);
-        return;
-    }
-
-    try engine.load(url);
-}
-
 fn defaultHistoryPersistencePath(allocator: std.mem.Allocator) ![]u8 {
     return defaultPersistenceFilePath(allocator, "history.jsonl");
 }
 
 fn defaultBookmarksPersistencePath(allocator: std.mem.Allocator) ![]u8 {
     return defaultPersistenceFilePath(allocator, "bookmarks.jsonl");
+}
+
+fn defaultDownloadsPersistencePath(allocator: std.mem.Allocator) ![]u8 {
+    return defaultPersistenceFilePath(allocator, "downloads.jsonl");
 }
 
 fn defaultPersistenceFilePath(allocator: std.mem.Allocator, filename: []const u8) ![]u8 {

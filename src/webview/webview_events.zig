@@ -54,6 +54,13 @@ pub const DetachedWindowPlacement = struct {
     height: f64,
 };
 
+pub const DownloadStartInfo = struct {
+    url: []const u8,
+    filename: []const u8,
+    file_path: []const u8,
+    started_at: i64,
+};
+
 pub const TabDetachRequest = struct {
     source_context: *anyopaque,
     placement: ?DetachedWindowPlacement = null,
@@ -87,6 +94,13 @@ pub const EventSink = struct {
     on_tab_move_to_window_requested: ?*const fn (context: *anyopaque, tab_id: u64, destination_window_handle: ?*anyopaque, insertion_index: ?usize) void = null,
     on_active_tab_back_requested: ?*const fn (context: *anyopaque) void = null,
     on_active_tab_forward_requested: ?*const fn (context: *anyopaque) void = null,
+    // Returns the record id assigned by the browser, or 0 when the download
+    // was not recorded (e.g. private mode).
+    on_download_started: ?*const fn (context: *anyopaque, info: DownloadStartInfo) u64 = null,
+    on_download_finished: ?*const fn (context: *anyopaque, id: u64, size_bytes: u64) void = null,
+    on_download_failed: ?*const fn (context: *anyopaque, id: u64) void = null,
+    on_downloads_remove_requested: ?*const fn (context: *anyopaque, source_handle: ?*anyopaque, request_url: []const u8) void = null,
+    on_downloads_clear_requested: ?*const fn (context: *anyopaque, source_handle: ?*anyopaque) void = null,
 };
 
 pub const ChromeSink = struct {
@@ -179,6 +193,16 @@ pub fn activateSinkForOwner(owner: ?*anyopaque) void {
             return;
         }
     }
+}
+
+// Sink registered for a specific owner window, without changing which sink
+// is active. Used for events that must reach a window that may not be key,
+// such as download lifecycle callbacks.
+fn sinkForOwner(owner: ?*anyopaque) ?EventSink {
+    for (event_sinks.items) |entry| {
+        if (entry.owner == owner) return entry.sink;
+    }
+    return current_sink;
 }
 
 pub fn setChromeSink(sink: ChromeSink) void {
@@ -289,6 +313,47 @@ pub fn emitTabDetachRequested(tab_id: u64, placement: ?DetachedWindowPlacement, 
         }
     }
     return null;
+}
+
+pub fn emitDownloadStartedForOwner(owner: ?*anyopaque, info: DownloadStartInfo) u64 {
+    if (sinkForOwner(owner)) |sink| {
+        if (sink.on_download_started) |callback| {
+            return callback(sink.context, info);
+        }
+    }
+    return 0;
+}
+
+pub fn emitDownloadFinishedForOwner(owner: ?*anyopaque, id: u64, size_bytes: u64) void {
+    if (sinkForOwner(owner)) |sink| {
+        if (sink.on_download_finished) |callback| {
+            callback(sink.context, id, size_bytes);
+        }
+    }
+}
+
+pub fn emitDownloadFailedForOwner(owner: ?*anyopaque, id: u64) void {
+    if (sinkForOwner(owner)) |sink| {
+        if (sink.on_download_failed) |callback| {
+            callback(sink.context, id);
+        }
+    }
+}
+
+pub fn emitDownloadsRemoveRequested(source_handle: ?*anyopaque, request_url: []const u8) void {
+    if (current_sink) |sink| {
+        if (sink.on_downloads_remove_requested) |callback| {
+            callback(sink.context, source_handle, request_url);
+        }
+    }
+}
+
+pub fn emitDownloadsClearRequested(source_handle: ?*anyopaque) void {
+    if (current_sink) |sink| {
+        if (sink.on_downloads_clear_requested) |callback| {
+            callback(sink.context, source_handle);
+        }
+    }
 }
 
 pub fn emitActiveTabMoveToExistingWindowRequested() void {

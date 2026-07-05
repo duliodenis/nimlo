@@ -1,5 +1,7 @@
 const std = @import("std");
 const bookmarks = @import("../storage/bookmarks.zig");
+const downloads = @import("../storage/downloads.zig");
+const downloads_page = @import("../ui/downloads_page.zig");
 const history = @import("../storage/history.zig");
 const preferences = @import("../storage/preferences.zig");
 const private_mode = @import("../privacy/private_mode.zig");
@@ -24,6 +26,9 @@ pub const Browser = struct {
     next_history_timestamp: i64,
     history_persistence_dir: ?std.Io.Dir,
     history_persistence_path: ?[]const u8,
+    downloads: downloads.DownloadStore,
+    downloads_persistence_dir: ?std.Io.Dir,
+    downloads_persistence_path: ?[]const u8,
     webview_adapter: *webview.WebViewAdapter,
     last_published_tabs: std.ArrayList(webview_events.TabSnapshot),
 
@@ -46,6 +51,9 @@ pub const Browser = struct {
             .next_history_timestamp = 0,
             .history_persistence_dir = null,
             .history_persistence_path = null,
+            .downloads = downloads.DownloadStore.init(allocator),
+            .downloads_persistence_dir = null,
+            .downloads_persistence_path = null,
             .webview_adapter = adapter,
             .last_published_tabs = .empty,
         };
@@ -71,6 +79,24 @@ pub const Browser = struct {
         self.bookmarks_persistence_dir = dir;
         self.bookmarks_persistence_path = owned_path;
         try self.bookmarks.saveToFile(dir, std.Options.debug_io, owned_path);
+    }
+
+    pub fn enableDownloadPersistence(self: *Browser, path: []const u8) !void {
+        try self.enableDownloadPersistenceInDir(std.Io.Dir.cwd(), path);
+    }
+
+    pub fn enableDownloadPersistenceInDir(self: *Browser, dir: std.Io.Dir, path: []const u8) !void {
+        const owned_path = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(owned_path);
+
+        try self.downloads.loadFromFile(dir, std.Options.debug_io, owned_path);
+
+        if (self.downloads_persistence_path) |old_path| {
+            self.allocator.free(old_path);
+        }
+        self.downloads_persistence_dir = dir;
+        self.downloads_persistence_path = owned_path;
+        try self.downloads.saveToFile(dir, std.Options.debug_io, owned_path);
     }
 
     pub fn enableHistoryPersistenceInDir(self: *Browser, dir: std.Io.Dir, path: []const u8) !void {
@@ -120,12 +146,25 @@ pub const Browser = struct {
             .on_tab_move_to_window_requested = handleTabMoveToWindowRequested,
             .on_active_tab_back_requested = handleActiveTabBackRequested,
             .on_active_tab_forward_requested = handleActiveTabForwardRequested,
+            .on_download_started = handleDownloadStarted,
+            .on_download_finished = handleDownloadFinished,
+            .on_download_failed = handleDownloadFailed,
+            .on_downloads_remove_requested = handleDownloadsRemoveRequested,
+            .on_downloads_clear_requested = handleDownloadsClearRequested,
         });
         self.publishTabsChanged();
     }
 
     pub fn publishChromeState(self: *Browser) void {
         self.publishTabsChanged();
+    }
+
+    // Loads the active tab's content, rendering internal pages through the
+    // same dispatch as in-window navigation. Used when a window is created
+    // around an existing tab (startup, tab tear-off, menu detach).
+    pub fn loadActiveTab(self: *Browser) !void {
+        const tab = self.tabs.activeTab() orelse return;
+        try self.loadTab(tab.*);
     }
 
     pub fn addMovedTab(self: *Browser, moved_tab: webview_events.DetachedTab) !void {
@@ -158,6 +197,10 @@ pub const Browser = struct {
         }
         self.history.deinit();
         if (self.history_persistence_path) |path| {
+            self.allocator.free(path);
+        }
+        self.downloads.deinit();
+        if (self.downloads_persistence_path) |path| {
             self.allocator.free(path);
         }
         self.tabs.deinit();
@@ -299,6 +342,93 @@ pub const Browser = struct {
         for (urls.items) |url| {
             if (!history.shouldRecordUrl(url)) continue;
             self.openOrActivateUrl(url) catch continue;
+        }
+    }
+
+    fn handleDownloadStarted(context: *anyopaque, info: webview_events.DownloadStartInfo) u64 {
+        const self: *Browser = @ptrCast(@alignCast(context));
+        if (self.private_mode.enabled) return 0;
+        if (info.url.len == 0) return 0;
+
+        const id = self.downloads.uniqueId(info.started_at);
+        self.downloads.recordStart(.{
+            .id = id,
+            .url = info.url,
+            .filename = info.filename,
+            .file_path = info.file_path,
+            .size_bytes = 0,
+            .started_at = info.started_at,
+            .state = .in_progress,
+        }) catch return 0;
+
+        self.saveDownloadsIfPersistent();
+        self.reloadDownloadsPageIfActive(null);
+        return id;
+    }
+
+    fn handleDownloadFinished(context: *anyopaque, id: u64, size_bytes: u64) void {
+        const self: *Browser = @ptrCast(@alignCast(context));
+        if (!self.downloads.markCompleted(id, size_bytes)) return;
+
+        self.saveDownloadsIfPersistent();
+        self.reloadDownloadsPageIfActive(null);
+    }
+
+    fn handleDownloadFailed(context: *anyopaque, id: u64) void {
+        const self: *Browser = @ptrCast(@alignCast(context));
+        if (!self.downloads.markFailed(id)) return;
+
+        self.saveDownloadsIfPersistent();
+        self.reloadDownloadsPageIfActive(null);
+    }
+
+    fn handleDownloadsRemoveRequested(context: *anyopaque, source_handle: ?*anyopaque, request_url: []const u8) void {
+        const self: *Browser = @ptrCast(@alignCast(context));
+        if (self.removeDownloadIdsFromRequest(request_url) == 0) return;
+
+        self.saveDownloadsIfPersistent();
+        self.reloadDownloadsPageIfActive(source_handle);
+    }
+
+    fn handleDownloadsClearRequested(context: *anyopaque, source_handle: ?*anyopaque) void {
+        const self: *Browser = @ptrCast(@alignCast(context));
+        if (self.downloads.entries().len == 0) return;
+
+        self.downloads.clear();
+        self.saveDownloadsIfPersistent();
+        self.reloadDownloadsPageIfActive(source_handle);
+    }
+
+    fn removeDownloadIdsFromRequest(self: *Browser, request_url: []const u8) usize {
+        const query_start = std.mem.indexOfScalar(u8, request_url, '?') orelse return 0;
+        const query = request_url[query_start + 1 ..];
+
+        var removed: usize = 0;
+        var params = std.mem.splitScalar(u8, query, '&');
+        while (params.next()) |param| {
+            const equals = std.mem.indexOfScalar(u8, param, '=') orelse continue;
+            if (!std.mem.eql(u8, param[0..equals], "ids")) continue;
+
+            var ids = std.mem.splitScalar(u8, param[equals + 1 ..], ',');
+            while (ids.next()) |text| {
+                const id = std.fmt.parseInt(u64, std.mem.trim(u8, text, " "), 10) catch continue;
+                if (self.downloads.removeId(id)) removed += 1;
+            }
+        }
+        return removed;
+    }
+
+    fn saveDownloadsIfPersistent(self: *Browser) void {
+        if (self.downloads_persistence_path) |path| {
+            const dir = self.downloads_persistence_dir orelse std.Io.Dir.cwd();
+            self.downloads.saveToFile(dir, std.Options.debug_io, path) catch {};
+        }
+    }
+
+    fn reloadDownloadsPageIfActive(self: *Browser, source_handle: ?*anyopaque) void {
+        const tab = self.tabs.findTabByWebView(source_handle) orelse self.tabs.activeTab() orelse return;
+        if (std.mem.eql(u8, tab.current_url, "nimlo://downloads")) {
+            self.loadTab(tab.*) catch return;
         }
     }
 
@@ -596,6 +726,14 @@ pub const Browser = struct {
         if (std.mem.eql(u8, tab.current_url, "nimlo://history")) {
             self.history.canonicalize();
             const html = try history_page.render(self.allocator, self.history.entries());
+            defer self.allocator.free(html);
+
+            try self.webview_adapter.loadHtml(html, tab.current_url);
+            return;
+        }
+        if (std.mem.eql(u8, tab.current_url, "nimlo://downloads")) {
+            self.downloads.canonicalize();
+            const html = try downloads_page.render(self.allocator, self.downloads.entries());
             defer self.allocator.free(html);
 
             try self.webview_adapter.loadHtml(html, tab.current_url);
@@ -2226,4 +2364,106 @@ test "close only start tab requests app close without replacing tab" {
     try std.testing.expectEqual(@as(usize, 1), browser.tabs.len());
     try std.testing.expectEqual(original, browser.tabs.active_tab_id.?);
     try std.testing.expectEqualStrings("nimlo://start", browser.tabs.activeTab().?.current_url);
+}
+
+test "download started records in-progress entry and returns id" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.start();
+    const id = webview_events.emitDownloadStartedForOwner(null, .{
+        .url = "https://example.com/report.pdf",
+        .filename = "report.pdf",
+        .file_path = "/tmp/report.pdf",
+        .started_at = 1_800_000_000_000,
+    });
+
+    try std.testing.expect(id != 0);
+    try std.testing.expectEqual(@as(usize, 1), browser.downloads.entries().len);
+    const entry = browser.downloads.findEntry(id).?;
+    try std.testing.expectEqualStrings("https://example.com/report.pdf", entry.url);
+    try std.testing.expectEqualStrings("report.pdf", entry.filename);
+    try std.testing.expectEqual(downloads.DownloadState.in_progress, entry.state);
+}
+
+test "download started in private mode is not recorded" {
+    var adapter = webview.WebViewAdapter.init();
+    var privacy = private_mode.PrivateModeConfig.default();
+    privacy.enabled = true;
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        privacy,
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.start();
+    const id = webview_events.emitDownloadStartedForOwner(null, .{
+        .url = "https://example.com/secret.pdf",
+        .filename = "secret.pdf",
+        .file_path = "/tmp/secret.pdf",
+        .started_at = 1_800_000_000_000,
+    });
+
+    try std.testing.expectEqual(@as(u64, 0), id);
+    try std.testing.expectEqual(@as(usize, 0), browser.downloads.entries().len);
+}
+
+test "download lifecycle completes and remove request deletes record" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.start();
+    const id = webview_events.emitDownloadStartedForOwner(null, .{
+        .url = "https://example.com/data.zip",
+        .filename = "data.zip",
+        .file_path = "/tmp/data.zip",
+        .started_at = 1_800_000_000_000,
+    });
+    try std.testing.expect(id != 0);
+
+    webview_events.emitDownloadFinishedForOwner(null, id, 4096);
+    const entry = browser.downloads.findEntry(id).?;
+    try std.testing.expectEqual(downloads.DownloadState.completed, entry.state);
+    try std.testing.expectEqual(@as(u64, 4096), entry.size_bytes);
+
+    var request_buffer: [128]u8 = undefined;
+    const request_url = try std.fmt.bufPrint(&request_buffer, "https://nimlo.internal/downloads/remove?ids={d}", .{id});
+    webview_events.emitDownloadsRemoveRequested(null, request_url);
+    try std.testing.expectEqual(@as(usize, 0), browser.downloads.entries().len);
+}
+
+test "download failure marks record failed and clear request empties store" {
+    var adapter = webview.WebViewAdapter.init();
+    var browser = Browser.init(
+        preferences.Preferences.default(),
+        private_mode.PrivateModeConfig.default(),
+        &adapter,
+    );
+    defer browser.deinit();
+
+    try browser.start();
+    const id = webview_events.emitDownloadStartedForOwner(null, .{
+        .url = "https://example.com/broken.zip",
+        .filename = "broken.zip",
+        .file_path = "/tmp/broken.zip",
+        .started_at = 1_800_000_000_000,
+    });
+    try std.testing.expect(id != 0);
+
+    webview_events.emitDownloadFailedForOwner(null, id);
+    try std.testing.expectEqual(downloads.DownloadState.failed, browser.downloads.findEntry(id).?.state);
+
+    webview_events.emitDownloadsClearRequested(null);
+    try std.testing.expectEqual(@as(usize, 0), browser.downloads.entries().len);
 }

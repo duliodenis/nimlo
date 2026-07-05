@@ -1,6 +1,7 @@
 const std = @import("std");
 const window = @import("window.zig");
 const chrome = @import("../ui/chrome_macos.zig");
+const webview_events = @import("../webview/webview_events.zig");
 
 const c = @cImport({
     @cInclude("objc/runtime.h");
@@ -108,6 +109,11 @@ pub const MacOSWindow = struct {
         // close windows and free the session that owns this struct, so no
         // field access is safe after the call.
         const app = self.app;
+        // The URL hook runs first so the tear-off self-test can drag a tab
+        // that is showing an arbitrary page (e.g. an internal one).
+        if (std.c.getenv("NIMLO_DOWNLOAD_TEST")) |url| {
+            webview_events.emitUrlOpenRequested(std.mem.span(url));
+        }
         if (std.c.getenv("NIMLO_TEAR_OFF_TEST") != null) chrome.runTearOffSelfTest();
         msg0(void, app, sel("run"));
     }

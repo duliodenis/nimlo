@@ -176,11 +176,12 @@ Nimlo
 
 ### 0.6 — Window and Tab Management
 
-- [ ] Drag tabs to reorder
-- [ ] Detach tab into a new window
-- [ ] Move tab between windows
-- [ ] Close window when its last tab closes
-- [ ] Preserve per-window active tab state
+- [x] Drag tabs to reorder
+- [x] Detach tab into a new window
+- [x] Move tab between windows
+- [x] Re-dock detached tabs into an existing window
+- [x] Close window when its last tab closes
+- [x] Preserve per-window active tab state
 
 ### 0.7 — Downloads
 

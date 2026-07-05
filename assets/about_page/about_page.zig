@@ -45,7 +45,7 @@ pub const html =
     \\        <div class="mark" aria-hidden="true">N</div>
     \\        <div>
     \\          <div class="name">Nimlo</div>
-    \\          <p>Version 0.6</p>
+    \\          <p>Version 0.7</p>
     \\        </div>
     \\      </div>
     \\      <div class="status">
@@ -95,7 +95,7 @@ pub const html =
     \\    viewportNode.textContent = viewport();
     \\    window.addEventListener("resize", () => { viewportNode.textContent = viewport(); });
     \\
-    \\    const currentVersion = "0.6";
+    \\    const currentVersion = "0.7";
     \\    const latestVersionUrl = "https://nimlo.org/version.latest";
     \\    const updateTitle = document.getElementById("update-title");
     \\    const updateDetail = document.getElementById("update-detail");

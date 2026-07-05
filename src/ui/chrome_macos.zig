@@ -476,8 +476,26 @@ pub fn setActiveWebView(webview: Id) void {
     setLoadingState(webViewIsLoading(webview));
 }
 
+// Close confirmation for a single window: closing one window of several is
+// never a quit, so it only prompts when this is the last window left.
+pub fn confirmWindowCloseIfNeeded(window_handle: Id) bool {
+    _ = window_handle;
+    if (chromeWindowCount() > 1) return true;
+    return confirmQuitIfNeeded();
+}
+
+pub fn chromeWindowCount() usize {
+    saveActiveChromeWindowState();
+    return chrome_window_states.items.len;
+}
+
 pub fn confirmQuitIfNeeded() bool {
-    const tab_count = current_tab_snapshots.items.len;
+    saveActiveChromeWindowState();
+    var tab_count: usize = 0;
+    for (chrome_window_states.items) |state| {
+        tab_count += state.tab_snapshots.items.len;
+    }
+    if (chrome_window_states.items.len == 0) tab_count = current_tab_snapshots.items.len;
     if (tab_count <= 1) return true;
 
     const alert = msg0(Id, msg0(Id, cls("NSAlert"), sel("alloc")), sel("init"));
@@ -498,6 +516,11 @@ pub fn confirmQuitIfNeeded() bool {
     _ = msg1(Id, alert, sel("addButtonWithTitle:"), nsString("Don't Quit"));
     _ = msg1(Id, alert, sel("addButtonWithTitle:"), nsString("Quit"));
 
+    // Make sure the modal alert is front and focused; without this it can
+    // end up behind other windows and the app just looks frozen.
+    if (msg0(Id, cls("NSApplication"), sel("sharedApplication"))) |app| {
+        msg1(void, app, sel("activateIgnoringOtherApps:"), true);
+    }
     return msg0(isize, alert, sel("runModal")) == NSModalResponseSecondButtonReturn;
 }
 
@@ -1907,6 +1930,44 @@ fn detachedWindowPlacement(event: Id) ?webview_events.DetachedWindowPlacement {
     };
 }
 
+
+// Diagnostic driven by NIMLO_CLOSE_SOURCE_TEST=1: tears a tab off a
+// three-tab window, then closes the source window through the user-facing
+// performClose: path and reports what windows/modal sessions remain.
+pub fn runCloseSourceSelfTest() void {
+    tear_off_self_test_active = true;
+    defer tear_off_self_test_active = false;
+
+    webview_events.emitNewTabRequested();
+    webview_events.emitNewTabRequested();
+
+    const source_window = current_window orelse return;
+    const document_view = current_tab_document_view orelse return;
+    const strip_rect = screenRectForView(document_view) orelse return;
+    const button = firstTabButton(document_view) orelse return;
+
+    const start = CGPoint{
+        .x = strip_rect.origin.x + 30,
+        .y = strip_rect.origin.y + strip_rect.size.height / 2,
+    };
+    tabButtonMouseDown(button, null, synthesizedMouseEvent(source_window, start, NSEventTypeLeftMouseDown));
+    tabButtonMouseDragged(null, null, synthesizedMouseEvent(source_window, .{ .x = start.x + 12, .y = start.y }, NSEventTypeLeftMouseDragged));
+    tabButtonMouseDragged(null, null, synthesizedMouseEvent(source_window, .{ .x = start.x + 16, .y = start.y - 80 }, NSEventTypeLeftMouseDragged));
+    const release_point = CGPoint{ .x = start.x + 200, .y = start.y - 160 };
+    tabButtonMouseUp(button, null, synthesizedMouseEvent(source_window, release_point, NSEventTypeLeftMouseUp));
+    std.debug.print("close-test: tear-off done, source tabs remaining pending publish\n", .{});
+
+    // Re-activate the source the way clicking it would, then close it the
+    // way the red button does.
+    activateChromeWindowState(source_window);
+    std.debug.print("close-test: source active, snapshots={d}, calling performClose\n", .{current_tab_snapshots.items.len});
+    msg1(void, source_window, sel("performClose:"), @as(Id, null));
+    std.debug.print("close-test: performClose returned\n", .{});
+
+    const app = msg0(Id, cls("NSApplication"), sel("sharedApplication"));
+    const modal_window = msg0(Id, app, sel("modalWindow"));
+    std.debug.print("close-test: modalWindow={any} states={d}\n", .{ modal_window != null, chrome_window_states.items.len });
+}
 
 // Temporary diagnostic driven by NIMLO_TEAR_OFF_TEST=1: replays a tab drag
 // through the real handlers with synthesized events so the tear-off geometry

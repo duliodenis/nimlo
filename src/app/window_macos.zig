@@ -115,6 +115,7 @@ pub const MacOSWindow = struct {
             webview_events.emitUrlOpenRequested(std.mem.span(url));
         }
         if (std.c.getenv("NIMLO_TEAR_OFF_TEST") != null) chrome.runTearOffSelfTest();
+        if (std.c.getenv("NIMLO_CLOSE_SOURCE_TEST") != null) chrome.runCloseSourceSelfTest();
         msg0(void, app, sel("run"));
     }
 
@@ -265,9 +266,11 @@ fn applicationShouldTerminate(_: Id, _: Sel, _: Id) callconv(.c) isize {
     return if (chrome.confirmQuitIfNeeded()) NSTerminateNow else NSTerminateCancel;
 }
 
-fn windowShouldClose(_: Id, _: Sel, _: Id) callconv(.c) u8 {
-    const should_close = chrome.confirmQuitIfNeeded();
-    window_close_approved_for_termination = should_close;
+fn windowShouldClose(_: Id, _: Sel, sender: Id) callconv(.c) u8 {
+    const should_close = chrome.confirmWindowCloseIfNeeded(sender);
+    // Only a last-window close can cascade into app termination; a stale
+    // approval from closing an earlier window must not skip the quit prompt.
+    window_close_approved_for_termination = should_close and chrome.chromeWindowCount() <= 1;
     return if (should_close) 1 else 0;
 }
 

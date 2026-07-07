@@ -198,7 +198,7 @@ Nimlo
 
 Implementation plan: [docs/CONTENT_BLOCKING.md](docs/CONTENT_BLOCKING.md)
 
-- [ ] Research uBlock Origin capabilities and filter-list behavior
+- [x] Research capabilities and filter-list behavior
 - [ ] Add URL-level blocking hooks before navigation/request load where WebKit allows
 - [ ] Support common filter lists such as EasyList/EasyPrivacy-style network filters
 - [ ] Add local filter list storage and update flow

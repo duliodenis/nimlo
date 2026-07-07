@@ -86,11 +86,11 @@ Two enforcement backends consume the same canonical rules:
 
 ## Phase A — Research and capability matrix
 
-Goal: the "Research uBlock Origin" checkbox, produced as a short section
+Goal: the "Research" checkbox, produced as a short section
 appended to this document, so scope decisions are recorded and the two later
 "investigate" phases have a baseline.
 
-1. Catalog uBO capability tiers: static network filtering (blocking +
+1. Catalog capability tiers: static network filtering (blocking +
    exceptions + options), cosmetic filtering (generic/specific element hiding,
    procedural selectors), dynamic filtering (per-site 3p matrix), scriptlets,
    `redirect=`/neutered resources.
@@ -354,6 +354,66 @@ shared code the Windows track consumes later (matcher-in-
 `WebResourceRequested` + policy-store check + script-injection stub). Add a
 "Phase 8 — Content blocking" section to `docs/WINDOWS_PORT.md` when this
 milestone ships on macOS.
+
+## Appendix A — Phase A findings
+
+### Capability matrix
+
+| Capability tier | WebKit static rules (macOS) | Runtime matcher (Windows) | 0.8 decision |
+|---|---|---|---|
+| Static network block/exception (`||`, `|`, `^`, `*`, `@@`) | yes | yes | **ship** |
+| Options: resource types, `third-party`, `domain=`, `match-case` | yes | yes | **ship** |
+| `$popup` | yes (`resource-type: popup`) | partial (`NewWindowRequested`, later) | ship on macOS, parse everywhere |
+| `$important` | no (priority order approximates) | trivial | accept, ignore (10 rules total) |
+| Cosmetic element hiding (`##`, `#@#`, `domain##`) | yes (`css-display-none`) | via script injection | **Phase I** — fits the cap (see below) |
+| Procedural cosmetic (`#?#`), scriptlets (`##+js`) | no | no (needs JS framework) | drop, count |
+| `$redirect=`, `$csp=`, `$removeparam=` | no | theoretically (response faking) | drop, count |
+| Cosmetic-control exceptions (`$generichide`, `$elemhide`) | no | n/a until Phase I | drop, count — **must not** degrade to network exceptions |
+| Dynamic filtering / per-site firewall | no | yes | **Phase J** write-up only |
+| Raw regex rules (`/…/`) | partial (regex subset) | possible | drop, count (9 rules total) |
+
+### Measured lists
+
+| | EasyList | EasyPrivacy |
+|---|---|---|
+| Network block rules | 52,916 | 54,642 |
+| — domain-anchored (`\|\|`) | 51,537 (97%) | 51,220 (94%) |
+| — with options | 6,426 | 4,731 |
+| — `$popup` | 3,003 | 0 |
+| — regex / unsupported-option | 9 / 3 | 0 / 23 |
+| Exceptions (`@@`) | 757 | 828 |
+| Cosmetic (`##` / `#@#`) | 23,691 / 336 | 7 / 0 |
+| Procedural + scriptlet (dropped) | 273 | 26 |
+
+Most frequent options across both lists: `third-party` 5,964 · `popup` 3,044
+· `domain=` 1,187 · `script` 1,079 · `image` 668 · `document` 609 ·
+`~third-party` 512 · `xmlhttprequest` 260 · `subdocument` 176 ·
+`generichide` 167 · `redirect=` 21 · `important` 10.
+
+### Consequences
+
+- **Network + exceptions ≈ 109k rules → fits WebKit's 150k cap with ~40k
+  headroom.** Even adding all plain cosmetic rules (~24k) stays under the cap
+  (~133k) — Phase I starts from "fits numerically", so its open questions are
+  compile time and selector fidelity, not budget.
+- **Expected conversion survival for network rules: >95%** (dropped: regex 9,
+  hard-unsupported options ~26, procedural/scriptlets 299 — all counted, all
+  cosmetic-adjacent or marginal).
+- **Verified by the Phase B parser against the same snapshots** (ReleaseFast,
+  `src/blocking/measure_main.zig` harness): EasyList 78,250 lines in 19 ms →
+  52,892 network + 589 exceptions + 24,027 cosmetic accepted, 465 dropped
+  (24 regex, 273 procedural, 168 options — matching the 167 `$generichide`
+  cosmetic-control exceptions plus one, correctly dropped rather than
+  degraded to network exceptions); EasyPrivacy 56,268 lines in 5 ms →
+  55,440 network+exceptions accepted, 56 dropped. Overall survival 99.4%;
+  parse cost is negligible against the well-under-a-second budget.
+- **`$generichide`/`$elemhide` rules (167) are cosmetic-control exceptions**:
+  parsing them as network exceptions would silently unblock requests — the
+  parser must classify them dropped-unsupported until Phase I handles them.
+- Scope confirmed as planned: **static network filtering with exceptions and
+  per-site allow; EasyList + EasyPrivacy defaults.** `block` per-site policy
+  (stricter-than-default) has no clear semantics yet → 0.8 ships allow-only
+  (Phase G item 2 resolved).
 
 ## Definition of done (0.8)
 

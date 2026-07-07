@@ -14,22 +14,8 @@ pub fn build(b: *std.Build) void {
         b.sysroot = b.dupe(std.mem.trim(u8, sdk_path_output, " \t\r\n"));
     }
 
-    const root_module = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    const root_module = createNimloModule(b, target, optimize);
     addMacosSdkPaths(b, root_module, target);
-    root_module.addAnonymousImport("start_page_asset", .{
-        .root_source_file = b.path("assets/start_page/start_page.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    root_module.addAnonymousImport("about_page_asset", .{
-        .root_source_file = b.path("assets/about_page/about_page.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
 
     const exe = b.addExecutable(.{
         .name = "nimlo",
@@ -41,9 +27,21 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("objc", .{});
         exe.root_module.linkFramework("AppKit", .{});
         exe.root_module.linkFramework("WebKit", .{});
+    } else if (target.result.os.tag == .windows) {
+        addWindowsSystemLibraries(exe.root_module);
     }
 
     b.installArtifact(exe);
+
+    if (target.result.os.tag == .windows) {
+        // The vendored loader must sit next to nimlo.exe; it is resolved at
+        // runtime with LoadLibraryW (see src/webview/webview_win32.zig).
+        const install_loader = b.addInstallBinFile(
+            b.path(webview2LoaderSourcePath(target.result.cpu.arch)),
+            "WebView2Loader.dll",
+        );
+        b.getInstallStep().dependOn(&install_loader.step);
+    }
 
     if (target.result.os.tag == .macos) {
         const bundle_exe = b.addInstallFile(
@@ -188,6 +186,15 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_internal_routes_tests = b.addRunArtifact(internal_routes_tests);
+    const webview2_tests = b.addTest(.{
+        .name = "webview2-tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/webview/webview2.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_webview2_tests = b.addRunArtifact(webview2_tests);
     const downloads_tests = b.addTest(.{
         .name = "downloads-tests",
         .root_module = b.createModule(.{
@@ -251,33 +258,40 @@ pub fn build(b: *std.Build) void {
     }
     const run_browser_tests = b.addRunArtifact(browser_tests);
 
-    // Cross-compiles the stub (non-macOS) configuration so platform-specific
-    // code leaking into shared modules fails fast: `zig build check-portable`.
+    // Cross-compiles the stub configuration so platform-specific code leaking
+    // into shared modules fails fast: `zig build check-portable`. Linux is the
+    // stub target now that Windows compiles the real Win32/WebView2 code.
     const portable_target = b.resolveTargetQuery(.{
         .cpu_arch = .x86_64,
-        .os_tag = .windows,
+        .os_tag = .linux,
+        .abi = .musl,
     });
-    const portable_module = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
-        .target = portable_target,
-        .optimize = optimize,
-    });
-    portable_module.addAnonymousImport("start_page_asset", .{
-        .root_source_file = b.path("assets/start_page/start_page.zig"),
-        .target = portable_target,
-        .optimize = optimize,
-    });
-    portable_module.addAnonymousImport("about_page_asset", .{
-        .root_source_file = b.path("assets/about_page/about_page.zig"),
-        .target = portable_target,
-        .optimize = optimize,
-    });
+    const portable_module = createNimloModule(b, portable_target, optimize);
+    portable_module.link_libc = true;
     const portable_exe = b.addExecutable(.{
         .name = "nimlo-portable-check",
         .root_module = portable_module,
     });
-    const check_portable_step = b.step("check-portable", "Compile for a non-macOS target to catch platform leaks in shared code");
+    const check_portable_step = b.step("check-portable", "Compile for a stub (non-macOS, non-Windows) target to catch platform leaks in shared code");
     check_portable_step.dependOn(&portable_exe.step);
+
+    // Cross-compiles and links the real Windows configuration from any host:
+    // `zig build check-windows`. This is the compile-time guard for the Win32
+    // port while development happens on macOS.
+    const check_windows_step = b.step("check-windows", "Cross-compile and link the Win32/WebView2 configuration");
+    for ([_]std.Target.Cpu.Arch{ .x86_64, .aarch64 }) |arch| {
+        const windows_target = b.resolveTargetQuery(.{
+            .cpu_arch = arch,
+            .os_tag = .windows,
+        });
+        const windows_module = createNimloModule(b, windows_target, optimize);
+        addWindowsSystemLibraries(windows_module);
+        const windows_exe = b.addExecutable(.{
+            .name = b.fmt("nimlo-windows-check-{s}", .{@tagName(arch)}),
+            .root_module = windows_module,
+        });
+        check_windows_step.dependOn(&windows_exe.step);
+    }
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_url_input_tests.step);
@@ -289,11 +303,44 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_tab_strip_layout_tests.step);
     test_step.dependOn(&run_tab_drag_logic_tests.step);
     test_step.dependOn(&run_internal_routes_tests.step);
+    test_step.dependOn(&run_webview2_tests.step);
     test_step.dependOn(&run_downloads_tests.step);
     test_step.dependOn(&run_downloads_page_tests.step);
     test_step.dependOn(&run_history_tests.step);
     test_step.dependOn(&run_history_page_tests.step);
     test_step.dependOn(&run_browser_tests.step);
+}
+
+fn createNimloModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    const module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    module.addAnonymousImport("start_page_asset", .{
+        .root_source_file = b.path("assets/start_page/start_page.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    module.addAnonymousImport("about_page_asset", .{
+        .root_source_file = b.path("assets/about_page/about_page.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    return module;
+}
+
+fn addWindowsSystemLibraries(module: *std.Build.Module) void {
+    // Cross-linked from any host via Zig's bundled mingw-w64 import libraries.
+    module.linkSystemLibrary("user32", .{});
+    module.linkSystemLibrary("ole32", .{});
+}
+
+fn webview2LoaderSourcePath(arch: std.Target.Cpu.Arch) []const u8 {
+    return switch (arch) {
+        .aarch64 => "windows/webview2/arm64/WebView2Loader.dll",
+        else => "windows/webview2/x64/WebView2Loader.dll",
+    };
 }
 
 fn addMacosSdkPaths(b: *std.Build, module: *std.Build.Module, target: std.Build.ResolvedTarget) void {

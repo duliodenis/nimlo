@@ -9,7 +9,7 @@ The first version is intentionally modest: a clean browser shell written primari
 
 ## Project Status
 
-Nimlo is an active macOS prototype.
+Nimlo is an active macOS prototype. A Windows port (Win32 + WebView2) is underway, re-walking the same roadmap milestones: the 0.1-equivalent scaffolding (native window, embedded WebView2, start page) is in place and cross-compiles from any host with `zig build check-windows`. The phase-by-phase parity plan is in [docs/WINDOWS_PORT.md](docs/WINDOWS_PORT.md).
 
 Current goal:
 
@@ -185,13 +185,14 @@ Nimlo
 
 ### 0.7 — Downloads
 
-- [ ] Track completed downloads
-- [ ] Add `nimlo://downloads`
-- [ ] View downloads newest-first
-- [ ] Persist downloads metadata
-- [ ] Open downloaded files
-- [ ] Reveal downloads in Finder
-- [ ] Remove or clear download records
+- [x] Track completed downloads
+- [x] Add `nimlo://downloads`
+- [x] View downloads newest-first
+- [x] Persist downloads metadata
+- [x] Open downloaded files
+- [x] Reveal downloads in Finder
+- [x] Remove or clear download records
+- [x] Windows scaffolding
 
 ### 0.8 — Content Blocking
 
@@ -280,6 +281,14 @@ Run tests:
 zig build test
 ```
 
+Cross-platform checks (run from any host):
+
+```bash
+zig build check-windows              # compile + link the Win32/WebView2 port (x86_64 and aarch64)
+zig build check-portable             # stub target (Linux) guard against platform leaks in shared code
+zig build -Dtarget=x86_64-windows    # full Windows install: nimlo.exe + WebView2Loader.dll in zig-out/bin
+```
+
 ## Repository Layout
 
 ```text
@@ -299,7 +308,10 @@ nimlo/
 │   ├── privacy/
 │   ├── ui/
 │   └── experimental_engine/
-└── assets/
+├── assets/
+├── macos/
+└── windows/
+
 ```
 
 ## Contributing

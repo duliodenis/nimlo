@@ -2,6 +2,10 @@ const std = @import("std");
 const url_input = @import("../browser/url_input.zig");
 const about_page = @import("about_page.zig");
 const start_page = @import("start_page.zig");
+const internal_routes = @import("internal_routes.zig");
+const tab_drag_logic = @import("tab_drag_logic.zig");
+const tab_strip_layout = @import("tab_strip_layout.zig");
+const web_strings = @import("web_strings.zig");
 const webview_events = @import("../webview/webview_events.zig");
 
 const c = @cImport({
@@ -30,7 +34,7 @@ pub const CGRect = extern struct {
     size: CGSize,
 };
 
-pub const tab_strip_height: CGFloat = 36;
+pub const tab_strip_height: CGFloat = tab_strip_layout.tab_strip_height;
 pub const toolbar_height: CGFloat = 48;
 pub const chrome_height: CGFloat = toolbar_height;
 
@@ -38,23 +42,22 @@ const address_field_height: CGFloat = 28;
 const address_field_margin: CGFloat = 12;
 const nav_button_size: CGFloat = 28;
 const nav_button_gap: CGFloat = 8;
-const tab_width: CGFloat = 220;
-const min_tab_width: CGFloat = 76;
+const tab_width: CGFloat = tab_strip_layout.tab_width;
+const min_tab_width: CGFloat = tab_strip_layout.min_tab_width;
 const tab_height: CGFloat = 28;
 const tab_icon_size: CGFloat = 16;
 const tab_close_button_size: CGFloat = 20;
 const tab_close_button_margin: CGFloat = 4;
-const tab_margin: CGFloat = 12;
+const tab_margin: CGFloat = tab_strip_layout.tab_margin;
 const tab_label_x: CGFloat = 28;
 const inactive_tab_width: CGFloat = 160;
 const min_titlebar_tab_strip_width: CGFloat = 320;
 const titlebar_window_margin: CGFloat = 118;
-const titlebar_new_tab_button_size: CGFloat = 28;
-const titlebar_new_tab_button_gap: CGFloat = 4;
+const titlebar_new_tab_button_size: CGFloat = tab_strip_layout.titlebar_new_tab_button_size;
+const titlebar_new_tab_button_gap: CGFloat = tab_strip_layout.titlebar_new_tab_button_gap;
 const tab_reorder_animation_duration: CGFloat = 0.14;
-const tab_drop_indicator_width: CGFloat = 3;
-const tab_drop_indicator_height: CGFloat = 24;
-const tab_tear_off_vertical_threshold: CGFloat = 18;
+const tab_drop_indicator_width: CGFloat = tab_strip_layout.tab_drop_indicator_width;
+const tab_drop_indicator_height: CGFloat = tab_strip_layout.tab_drop_indicator_height;
 const NSEventTypeLeftMouseDown: usize = 1;
 const NSEventTypeLeftMouseUp: usize = 2;
 const NSEventTypeLeftMouseDragged: usize = 6;
@@ -172,20 +175,7 @@ var current_tab_target: Id = null;
 var current_webview_target: Id = null;
 var current_window: Id = null;
 var current_tab_snapshots: std.ArrayList(webview_events.TabSnapshot) = .empty;
-var current_drag_tab_id: ?u64 = null;
-var current_drag_last_index: ?usize = null;
-var current_drag_start_point: CGPoint = .{ .x = 0, .y = 0 };
-var current_drag_grab_in_button: CGPoint = .{ .x = 0, .y = 0 };
-var current_drag_has_moved = false;
-var current_drag_source_window: Id = null;
-var current_drag_destination_window: Id = null;
-var current_drag_destination_index: ?usize = null;
-// Set while a torn-off window is following the mouse. The offset is the
-// vector from the cursor to the detached window's top-left, so the window
-// stays glued to the original grab point on every mouseDragged.
-var detached_drag_window: Id = null;
-var detached_drag_offset: CGPoint = .{ .x = 0, .y = 0 };
-var detached_drag_close_on_release: Id = null;
+var tab_drag: tab_drag_logic.TabDragState = .{};
 var tear_off_self_test_active = false;
 var pending_downloads: std.ArrayList(PendingDownload) = .empty;
 var webview_chrome_states: std.ArrayList(WebViewChromeState) = .empty;
@@ -480,7 +470,9 @@ pub fn setActiveWebView(webview: Id) void {
 // never a quit, so it only prompts when this is the last window left.
 pub fn confirmWindowCloseIfNeeded(window_handle: Id) bool {
     _ = window_handle;
-    if (chromeWindowCount() > 1) return true;
+    const window_count = chromeWindowCount();
+    std.debug.print("chrome: window close requested (windows={d})\n", .{window_count});
+    if (window_count > 1) return true;
     return confirmQuitIfNeeded();
 }
 
@@ -498,6 +490,7 @@ pub fn confirmQuitIfNeeded() bool {
     if (chrome_window_states.items.len == 0) tab_count = current_tab_snapshots.items.len;
     if (tab_count <= 1) return true;
 
+    std.debug.print("chrome: showing quit confirmation modal (tabs={d}, windows={d})\n", .{ tab_count, chrome_window_states.items.len });
     const alert = msg0(Id, msg0(Id, cls("NSAlert"), sel("alloc")), sel("init"));
     if (alert == null) return true;
 
@@ -667,8 +660,8 @@ fn renderTitlebarTabs(tabs: []const webview_events.TabSnapshot) !void {
     var x: CGFloat = 0;
     var active_button: Id = null;
     const tab_count = tabs.len;
-    const tab_slot_width = tabWidthForCount(tab_count, titlebarTabAreaWidth(container));
-    const animate_reorder = current_drag_has_moved;
+    const tab_slot_width = tab_strip_layout.tabWidthForCount(tab_count, titlebarTabAreaWidth(container));
+    const animate_reorder = tab_drag.has_moved;
     if (animate_reorder) beginTabReorderAnimation();
     defer if (animate_reorder) endTabReorderAnimation();
 
@@ -945,17 +938,7 @@ fn updateTitlebarNewTabButtonFrame(container: Id, button: Id) void {
 
 fn titlebarTabAreaWidth(container: Id) CGFloat {
     const bounds = msg0(CGRect, container, sel("bounds"));
-    const reserved = titlebar_new_tab_button_size + titlebar_new_tab_button_gap + tab_margin;
-    return @max(min_tab_width, bounds.size.width - reserved);
-}
-
-fn tabWidthForCount(tab_count: usize, tab_area_width: CGFloat) CGFloat {
-    if (tab_count == 0) return tab_width;
-
-    const count: CGFloat = @floatFromInt(tab_count);
-    const total_gaps = if (tab_count > 1) titlebar_new_tab_button_gap * @as(CGFloat, @floatFromInt(tab_count - 1)) else 0;
-    const available = @max(min_tab_width, tab_area_width - total_gaps);
-    return std.math.clamp(available / count, min_tab_width, tab_width);
+    return tab_strip_layout.tabAreaWidth(bounds.size.width);
 }
 
 fn resizeTabDocument(document_view: Id, content_width: CGFloat) void {
@@ -1020,10 +1003,29 @@ fn handleAddressBarFocusRequested(context: *anyopaque) void {
     msg1(void, address_field, sel("selectText:"), @as(Id, null));
 }
 
-fn handleAppCloseRequested(_: *anyopaque) void {
-    if (current_window) |window| {
-        msg0(void, window, sel("close"));
-    }
+fn handleAppCloseRequested(context: *anyopaque) void {
+    const window = chromeWindowForTarget(context) orelse current_window orelse return;
+    closeWindowWhenIdle(window);
+}
+
+// Closing a window synchronously from menu dispatch or a mouse-tracking loop
+// runs in a non-default run-loop mode, where AppKit defers the ordering work
+// and can strand the window on screen as an invisible click-eating ghost.
+// Scheduling with afterDelay:0 performs the close on the next default-mode
+// run-loop pass instead.
+fn closeWindowWhenIdle(window: Id) void {
+    if (window == null) return;
+    // Off screen right away — a bare close can leave the window mapped at
+    // alpha 0 (macOS 26 close fade), invisibly swallowing every click.
+    msg1(void, window, sel("orderOut:"), @as(Id, null));
+    msg3(
+        void,
+        window,
+        sel("performSelector:withObject:afterDelay:"),
+        sel("close"),
+        @as(Id, null),
+        @as(f64, 0),
+    );
 }
 
 fn handleHistoryEmptyRequested(_: *anyopaque) void {
@@ -1338,6 +1340,12 @@ fn installAddressBarTargetClass() void {
     );
     _ = c.class_addMethod(
         target_class,
+        c.sel_registerName("runScheduledCloseSourceTest:"),
+        @ptrCast(&runScheduledCloseSourceTest),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
         c.sel_registerName("showDownloads:"),
         @ptrCast(&showDownloads),
         "v@:@",
@@ -1550,41 +1558,41 @@ fn tabButtonMouseDown(button: Id, _: Sel, event: Id) callconv(.c) void {
     const index = tabSnapshotIndex(tab_id) orelse return;
     const point = eventLocationInTabDocument(event) orelse return;
 
-    current_drag_tab_id = tab_id;
-    current_drag_last_index = index;
-    current_drag_start_point = point;
-    current_drag_grab_in_button = msg2(
+    const grab = msg2(
         CGPoint,
         button,
         sel("convertPoint:fromView:"),
         msg0(CGPoint, event, sel("locationInWindow")),
         @as(Id, null),
     );
-    current_drag_has_moved = false;
-    current_drag_source_window = current_window;
-    current_drag_destination_window = null;
-    current_drag_destination_index = null;
+
+    tab_drag.reset();
+    tab_drag.tab_id = tab_id;
+    tab_drag.last_index = index;
+    tab_drag.start_point = .{ .x = point.x, .y = point.y };
+    tab_drag.grab_in_button = .{ .x = grab.x, .y = grab.y };
+    tab_drag.source_window = current_window;
     hideAllTabDropIndicators();
 }
 
 fn tabButtonMouseDragged(_: Id, _: Sel, event: Id) callconv(.c) void {
     if (moveDetachedDragWindow(event)) return;
-    const tab_id = current_drag_tab_id orelse return;
-    const from_index = current_drag_last_index orelse return;
+    const tab_id = tab_drag.tab_id orelse return;
+    const from_index = tab_drag.last_index orelse return;
     const point = eventLocationInTabDocument(event) orelse return;
-    const dx = absFloat(point.x - current_drag_start_point.x);
+    const dx = @abs(point.x - tab_drag.start_point.x);
     if (dx < 6) return;
 
-    current_drag_has_moved = true;
+    tab_drag.has_moved = true;
     if (tabDropTargetForEvent(event)) |target| {
-        current_drag_destination_window = target.window;
-        current_drag_destination_index = target.insertion_index;
+        tab_drag.destination_window = target.window;
+        tab_drag.destination_index = target.insertion_index;
         showTabDropIndicator(target);
         return;
     }
 
-    current_drag_destination_window = null;
-    current_drag_destination_index = null;
+    tab_drag.destination_window = null;
+    tab_drag.destination_index = null;
     hideAllTabDropIndicators();
 
     if (eventIsPastSourceTearOffThreshold(event)) {
@@ -1596,16 +1604,16 @@ fn tabButtonMouseDragged(_: Id, _: Sel, event: Id) callconv(.c) void {
     if (from_index == to_index) return;
 
     webview_events.emitTabReorderedRequested(from_index, to_index);
-    current_drag_last_index = to_index;
+    tab_drag.last_index = to_index;
 }
 
 fn tabButtonMouseUp(button: Id, _: Sel, event: Id) callconv(.c) void {
     if (releaseDetachedDragWindow(event)) return;
-    const tab_id = current_drag_tab_id orelse tabIdFromSender(button) orelse return;
-    const should_activate = !current_drag_has_moved;
-    const destination_window = current_drag_destination_window;
-    const destination_index = current_drag_destination_index;
-    const should_detach = current_drag_has_moved and destination_window == null and !eventIsInSourceTabStrip(event);
+    const tab_id = tab_drag.tab_id orelse tabIdFromSender(button) orelse return;
+    const should_activate = !tab_drag.has_moved;
+    const destination_window = tab_drag.destination_window;
+    const destination_index = tab_drag.destination_index;
+    const should_detach = tab_drag.shouldDetachOnRelease(eventIsInSourceTabStrip(event));
     const detach_placement = if (should_detach) detachedWindowPlacement(event) else null;
 
     resetCurrentTabDrag();
@@ -1624,14 +1632,7 @@ fn tabButtonMouseUp(button: Id, _: Sel, event: Id) callconv(.c) void {
 }
 
 fn resetCurrentTabDrag() void {
-    current_drag_tab_id = null;
-    current_drag_last_index = null;
-    current_drag_start_point = .{ .x = 0, .y = 0 };
-    current_drag_grab_in_button = .{ .x = 0, .y = 0 };
-    current_drag_has_moved = false;
-    current_drag_source_window = null;
-    current_drag_destination_window = null;
-    current_drag_destination_index = null;
+    tab_drag.reset();
     hideAllTabDropIndicators();
 }
 
@@ -1662,15 +1663,7 @@ fn eventLocationInTabDocument(event: Id) ?CGPoint {
 
 fn tabIndexAtDocumentX(x: CGFloat) ?usize {
     const container = current_tab_container orelse return null;
-    const tab_count = current_tab_snapshots.items.len;
-    if (tab_count == 0) return null;
-
-    const slot_width = tabWidthForCount(tab_count, titlebarTabAreaWidth(container));
-    const stride = slot_width + titlebar_new_tab_button_gap;
-    const clamped_x = @max(@as(CGFloat, 0), x);
-    var index: usize = @intFromFloat(@floor(clamped_x / stride));
-    if (index >= tab_count) index = tab_count - 1;
-    return index;
+    return tab_strip_layout.tabIndexAtX(x, current_tab_snapshots.items.len, titlebarTabAreaWidth(container));
 }
 
 const TabDropTarget = struct {
@@ -1680,7 +1673,7 @@ const TabDropTarget = struct {
 
 fn tabDropTargetForEvent(event: Id) ?TabDropTarget {
     const screen_point = eventLocationOnScreen(event) orelse return null;
-    return dropTargetAtScreenPoint(screen_point, current_drag_source_window, null);
+    return dropTargetAtScreenPoint(screen_point, tab_drag.source_window, null);
 }
 
 fn dropTargetAtScreenPoint(screen_point: CGPoint, exclude_a: Id, exclude_b: Id) ?TabDropTarget {
@@ -1706,7 +1699,7 @@ fn dropTargetAtScreenPoint(screen_point: CGPoint, exclude_a: Id, exclude_b: Id) 
 // the cursor, ignoring the dragged window itself and a hidden source window
 // awaiting its deferred close.
 fn detachedDockTargetAtPoint(screen_point: CGPoint) ?TabDropTarget {
-    return dropTargetAtScreenPoint(screen_point, detached_drag_window, detached_drag_close_on_release);
+    return dropTargetAtScreenPoint(screen_point, tab_drag.detached_window, tab_drag.detached_close_on_release);
 }
 
 fn eventIsInSourceTabStrip(event: Id) bool {
@@ -1718,12 +1711,11 @@ fn eventIsInSourceTabStrip(event: Id) bool {
 fn eventIsPastSourceTearOffThreshold(event: Id) bool {
     const screen_point = eventLocationOnScreen(event) orelse return false;
     const rect = sourceTabStripScreenRect() orelse return false;
-    return screen_point.y < rect.origin.y - tab_tear_off_vertical_threshold or
-        screen_point.y > rect.origin.y + rect.size.height + tab_tear_off_vertical_threshold;
+    return tab_drag_logic.isPastTearOffThreshold(screen_point.y, rect.origin.y, rect.size.height);
 }
 
 fn sourceTabStripScreenRect() ?CGRect {
-    const source_window = current_drag_source_window orelse return null;
+    const source_window = tab_drag.source_window orelse return null;
     const state = chromeWindowStateForWindow(source_window) orelse return null;
     const document_view = state.tab_document_view orelse return null;
     return screenRectForView(document_view);
@@ -1736,21 +1728,21 @@ fn tearOffDraggedTab(tab_id: u64, event: Id) void {
         return;
     };
     const cursor = eventLocationOnScreen(event) orelse return;
-    const source_window = current_drag_source_window;
+    const source_window = tab_drag.source_window;
     const tearing_off_final_tab = current_tab_snapshots.items.len <= 1;
     resetCurrentTabDrag();
 
     const detached_window = webview_events.emitTabDetachRequested(tab_id, placement, tearing_off_final_tab) orelse return;
 
-    detached_drag_window = detached_window;
-    detached_drag_offset = .{
+    tab_drag.detached_window = detached_window;
+    tab_drag.detached_offset = .{
         .x = placement.top_left.x - cursor.x,
         .y = placement.top_left.y - cursor.y,
     };
     if (tearing_off_final_tab) {
         if (source_window) |source| {
             msg1(void, source, sel("setAlphaValue:"), @as(CGFloat, 0));
-            detached_drag_close_on_release = source;
+            tab_drag.detached_close_on_release = source;
         }
     }
 
@@ -1777,7 +1769,7 @@ fn runDetachedWindowDragLoop() void {
     const distant_future = msg0(Id, cls("NSDate"), sel("distantFuture"));
     const tracking_mode = nsString("NSEventTrackingRunLoopMode");
 
-    while (detached_drag_window != null) {
+    while (tab_drag.detached_window != null) {
         const event = msg4(
             Id,
             app,
@@ -1812,25 +1804,25 @@ fn eventScreenLocationLoose(event: Id) ?CGPoint {
 // A fresh mouseDown means any previous detached-window drag is over; if its
 // mouseUp was lost, finish the deferred bookkeeping now.
 fn clearStaleDetachedDrag() void {
-    if (detached_drag_window == null) return;
-    detached_drag_window = null;
-    detached_drag_offset = .{ .x = 0, .y = 0 };
-    if (detached_drag_close_on_release) |source| {
-        detached_drag_close_on_release = null;
-        msg0(void, source, sel("close"));
+    if (tab_drag.detached_window == null) return;
+    tab_drag.detached_window = null;
+    tab_drag.detached_offset = .{ .x = 0, .y = 0 };
+    if (tab_drag.detached_close_on_release) |source| {
+        tab_drag.detached_close_on_release = null;
+        closeWindowWhenIdle(source);
     }
 }
 
 fn moveDetachedDragWindowToCursor(cursor: CGPoint) void {
-    const dragged = detached_drag_window orelse return;
+    const dragged = tab_drag.detached_window orelse return;
     msg1(void, dragged, sel("setFrameTopLeftPoint:"), CGPoint{
-        .x = cursor.x + detached_drag_offset.x,
-        .y = cursor.y + detached_drag_offset.y,
+        .x = cursor.x + tab_drag.detached_offset.x,
+        .y = cursor.y + tab_drag.detached_offset.y,
     });
 }
 
 fn moveDetachedDragWindow(event: Id) bool {
-    if (detached_drag_window == null) return false;
+    if (tab_drag.detached_window == null) return false;
     if (eventScreenLocationLoose(event)) |cursor| {
         moveDetachedDragWindowToCursor(cursor);
         updateDetachedDockFeedback(cursor);
@@ -1842,7 +1834,7 @@ fn moveDetachedDragWindow(event: Id) bool {
 // strip's insertion indicator and fade the dragged window so the indicator
 // underneath stays visible.
 fn updateDetachedDockFeedback(cursor: CGPoint) void {
-    const dragged = detached_drag_window orelse return;
+    const dragged = tab_drag.detached_window orelse return;
     if (detachedDockTargetAtPoint(cursor)) |target| {
         showTabDropIndicator(target);
         msg1(void, dragged, sel("setAlphaValue:"), @as(CGFloat, 0.55));
@@ -1855,7 +1847,7 @@ fn updateDetachedDockFeedback(cursor: CGPoint) void {
 // Ends a torn-off window drag: docks the tab into the strip under the cursor
 // when there is one, otherwise leaves the window at its final position.
 fn releaseDetachedDragWindow(event: Id) bool {
-    const dragged = detached_drag_window orelse return false;
+    const dragged = tab_drag.detached_window orelse return false;
     hideAllTabDropIndicators();
     msg1(void, dragged, sel("setAlphaValue:"), @as(CGFloat, 1));
 
@@ -1887,12 +1879,12 @@ fn singleTabIdForWindow(window_handle: Id) ?u64 {
 }
 
 fn finishDetachedDragWindowNow() bool {
-    if (detached_drag_window == null) return false;
-    detached_drag_window = null;
-    detached_drag_offset = .{ .x = 0, .y = 0 };
-    if (detached_drag_close_on_release) |source| {
-        detached_drag_close_on_release = null;
-        msg0(void, source, sel("close"));
+    if (tab_drag.detached_window == null) return false;
+    tab_drag.detached_window = null;
+    tab_drag.detached_offset = .{ .x = 0, .y = 0 };
+    if (tab_drag.detached_close_on_release) |source| {
+        tab_drag.detached_close_on_release = null;
+        closeWindowWhenIdle(source);
     }
     return true;
 }
@@ -1903,70 +1895,129 @@ fn finishDetachedDragWindowNow() bool {
 // window must still be alive when this runs.
 fn detachedWindowPlacement(event: Id) ?webview_events.DetachedWindowPlacement {
     const cursor = eventLocationOnScreen(event) orelse return null;
-    const source_window = current_drag_source_window orelse return null;
+    const source_window = tab_drag.source_window orelse return null;
     const state = chromeWindowStateForWindow(source_window) orelse return null;
     const container = state.tab_container orelse return null;
     const strip_rect = sourceTabStripScreenRect() orelse return null;
     const source_frame = msg0(CGRect, source_window, sel("frame"));
     const source_content = msg1(CGRect, source_window, sel("contentRectForFrameRect:"), source_frame);
 
-    const tab_area_left_inset = strip_rect.origin.x - source_frame.origin.x;
-    const top_inset = (source_frame.origin.y + source_frame.size.height) -
-        (strip_rect.origin.y + strip_rect.size.height);
-    const detached_tab_width = tabWidthForCount(1, titlebarTabAreaWidth(container));
-    const grab_dx = std.math.clamp(
-        current_drag_grab_in_button.x,
-        @as(CGFloat, 8),
-        @max(@as(CGFloat, 8), detached_tab_width - 8),
-    );
-
-    return .{
-        .top_left = .{
-            .x = cursor.x - tab_area_left_inset - grab_dx,
-            .y = cursor.y + top_inset + strip_rect.size.height / 2,
-        },
-        .width = source_content.size.width,
-        .height = source_content.size.height,
-    };
+    return tab_drag_logic.detachedPlacement(.{
+        .cursor = .{ .x = cursor.x, .y = cursor.y },
+        .source_frame_origin = .{ .x = source_frame.origin.x, .y = source_frame.origin.y },
+        .source_frame_height = source_frame.size.height,
+        .source_content_width = source_content.size.width,
+        .source_content_height = source_content.size.height,
+        .strip_origin = .{ .x = strip_rect.origin.x, .y = strip_rect.origin.y },
+        .strip_height = strip_rect.size.height,
+        .grab_x = tab_drag.grab_in_button.x,
+        .single_tab_width = tab_strip_layout.tabWidthForCount(1, titlebarTabAreaWidth(container)),
+    });
 }
 
 
 // Diagnostic driven by NIMLO_CLOSE_SOURCE_TEST=1: tears a tab off a
 // three-tab window, then closes the source window through the user-facing
 // performClose: path and reports what windows/modal sessions remain.
-pub fn runCloseSourceSelfTest() void {
+var scheduled_close_test_variant_buffer: [32]u8 = undefined;
+var scheduled_close_test_variant_len: usize = 0;
+
+// Defers the close-source self-test until the run loop is live, so window
+// creation goes through real key-window notifications like user interaction.
+pub fn scheduleCloseSourceSelfTest(variant: []const u8) void {
+    const len = @min(variant.len, scheduled_close_test_variant_buffer.len);
+    @memcpy(scheduled_close_test_variant_buffer[0..len], variant[0..len]);
+    scheduled_close_test_variant_len = len;
+
+    const target = current_webview_target orelse {
+        runCloseSourceSelfTest(variant);
+        return;
+    };
+    _ = msg5(
+        Id,
+        cls("NSTimer"),
+        sel("scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:"),
+        @as(f64, 1.0),
+        target,
+        sel("runScheduledCloseSourceTest:"),
+        @as(Id, null),
+        false,
+    );
+}
+
+fn runScheduledCloseSourceTest(_: Id, _: Sel, _: Id) callconv(.c) void {
+    runCloseSourceSelfTest(scheduled_close_test_variant_buffer[0..scheduled_close_test_variant_len]);
+}
+
+pub fn runCloseSourceSelfTest(variant: []const u8) void {
     tear_off_self_test_active = true;
     defer tear_off_self_test_active = false;
 
-    webview_events.emitNewTabRequested();
-    webview_events.emitNewTabRequested();
+    const menu_detach = std.mem.eql(u8, variant, "menu");
+    const about_tab = std.mem.eql(u8, variant, "about");
+    const two_tabs = menu_detach or about_tab or std.mem.eql(u8, variant, "drag2");
+
+    if (about_tab) {
+        webview_events.emitUrlOpenRequested("nimlo://about");
+    } else {
+        webview_events.emitNewTabRequested();
+    }
+    if (!two_tabs) webview_events.emitNewTabRequested();
 
     const source_window = current_window orelse return;
-    const document_view = current_tab_document_view orelse return;
-    const strip_rect = screenRectForView(document_view) orelse return;
-    const button = firstTabButton(document_view) orelse return;
 
-    const start = CGPoint{
-        .x = strip_rect.origin.x + 30,
-        .y = strip_rect.origin.y + strip_rect.size.height / 2,
-    };
-    tabButtonMouseDown(button, null, synthesizedMouseEvent(source_window, start, NSEventTypeLeftMouseDown));
-    tabButtonMouseDragged(null, null, synthesizedMouseEvent(source_window, .{ .x = start.x + 12, .y = start.y }, NSEventTypeLeftMouseDragged));
-    tabButtonMouseDragged(null, null, synthesizedMouseEvent(source_window, .{ .x = start.x + 16, .y = start.y - 80 }, NSEventTypeLeftMouseDragged));
-    const release_point = CGPoint{ .x = start.x + 200, .y = start.y - 160 };
-    tabButtonMouseUp(button, null, synthesizedMouseEvent(source_window, release_point, NSEventTypeLeftMouseUp));
-    std.debug.print("close-test: tear-off done, source tabs remaining pending publish\n", .{});
+    if (menu_detach) {
+        webview_events.emitActiveTabDetachRequested();
+        std.debug.print("close-test({s}): menu detach done\n", .{variant});
+    } else {
+        const document_view = current_tab_document_view orelse return;
+        const button_index: usize = if (two_tabs) 1 else 0;
+        const button = tabButtonAtIndex(document_view, button_index) orelse return;
+        const button_rect = screenRectForView(button) orelse return;
+
+        const start = CGPoint{
+            .x = button_rect.origin.x + 30,
+            .y = button_rect.origin.y + button_rect.size.height / 2,
+        };
+        tabButtonMouseDown(button, null, synthesizedMouseEvent(source_window, start, NSEventTypeLeftMouseDown));
+        tabButtonMouseDragged(null, null, synthesizedMouseEvent(source_window, .{ .x = start.x + 12, .y = start.y }, NSEventTypeLeftMouseDragged));
+        tabButtonMouseDragged(null, null, synthesizedMouseEvent(source_window, .{ .x = start.x + 16, .y = start.y - 80 }, NSEventTypeLeftMouseDragged));
+        const release_point = CGPoint{ .x = start.x + 200, .y = start.y - 160 };
+        tabButtonMouseUp(button, null, synthesizedMouseEvent(source_window, release_point, NSEventTypeLeftMouseUp));
+        std.debug.print("close-test({s}): tear-off done\n", .{variant});
+    }
 
     // Re-activate the source the way clicking it would, then close it the
     // way the red button does.
     activateChromeWindowState(source_window);
-    std.debug.print("close-test: source active, snapshots={d}, calling performClose\n", .{current_tab_snapshots.items.len});
+    std.debug.print("close-test({s}): source active, snapshots={d}, window_count={d}, calling performClose\n", .{ variant, current_tab_snapshots.items.len, chromeWindowCount() });
     msg1(void, source_window, sel("performClose:"), @as(Id, null));
-    std.debug.print("close-test: performClose returned\n", .{});
+    std.debug.print("close-test({s}): performClose returned\n", .{variant});
 
     const app = msg0(Id, cls("NSApplication"), sel("sharedApplication"));
     const modal_window = msg0(Id, app, sel("modalWindow"));
-    std.debug.print("close-test: modalWindow={any} states={d}\n", .{ modal_window != null, chrome_window_states.items.len });
+    std.debug.print("close-test({s}): modalWindow={any} states={d} current_window_alive={any}\n", .{
+        variant,
+        modal_window != null,
+        chrome_window_states.items.len,
+        current_window != null and chromeWindowStateForWindow(current_window) != null,
+    });
+}
+
+fn tabButtonAtIndex(document_view: Id, index: usize) Id {
+    const subviews = msg0(Id, document_view, sel("subviews"));
+    if (subviews == null) return null;
+    const count = msg0(usize, subviews, sel("count"));
+    var seen: usize = 0;
+    var view_index: usize = 0;
+    while (view_index < count) : (view_index += 1) {
+        const view = msg1(Id, subviews, sel("objectAtIndex:"), view_index);
+        if (view == null) continue;
+        if (msg1(u8, view, sel("isKindOfClass:"), cls("NimloTabButton")) == 0) continue;
+        if (seen == index) return view;
+        seen += 1;
+    }
+    return null;
 }
 
 // Temporary diagnostic driven by NIMLO_TEAR_OFF_TEST=1: replays a tab drag
@@ -2006,7 +2057,7 @@ pub fn runTearOffSelfTest() void {
     std.debug.print("self-test: dragging to ({d:.1},{d:.1})\n", .{ tear_point.x, tear_point.y });
     tabButtonMouseDragged(null, null, synthesizedMouseEvent(window_handle, tear_point, NSEventTypeLeftMouseDragged));
 
-    const dragged = detached_drag_window orelse {
+    const dragged = tab_drag.detached_window orelse {
         std.debug.print("self-test: FAILED, tear-off did not start\n", .{});
         return;
     };
@@ -2017,8 +2068,8 @@ pub fn runTearOffSelfTest() void {
     std.debug.print("self-test: following to ({d:.1},{d:.1}), expected top_left=({d:.1},{d:.1})\n", .{
         follow_point.x,
         follow_point.y,
-        follow_point.x + detached_drag_offset.x,
-        follow_point.y + detached_drag_offset.y,
+        follow_point.x + tab_drag.detached_offset.x,
+        follow_point.y + tab_drag.detached_offset.y,
     });
     tabButtonMouseDragged(null, null, synthesizedMouseEvent(window_handle, follow_point, NSEventTypeLeftMouseDragged));
     tabButtonMouseUp(button, null, synthesizedMouseEvent(window_handle, follow_point, NSEventTypeLeftMouseUp));
@@ -2046,7 +2097,7 @@ pub fn runTearOffSelfTest() void {
     tabButtonMouseDown(source_button, null, synthesizedMouseEvent(window_handle, phase2_start, NSEventTypeLeftMouseDown));
     tabButtonMouseDragged(null, null, synthesizedMouseEvent(window_handle, .{ .x = phase2_start.x + 12, .y = phase2_start.y }, NSEventTypeLeftMouseDragged));
     tabButtonMouseDragged(null, null, synthesizedMouseEvent(window_handle, .{ .x = phase2_start.x + 16, .y = phase2_start.y - 80 }, NSEventTypeLeftMouseDragged));
-    if (detached_drag_window == null) {
+    if (tab_drag.detached_window == null) {
         std.debug.print("self-test: phase2 FAILED, tear-off did not start\n", .{});
         return;
     }
@@ -2073,7 +2124,7 @@ pub fn runTearOffSelfTest() void {
     std.debug.print("self-test: phase2 done tabs={d} states={d} drag_active={any}\n", .{
         current_tab_snapshots.items.len,
         chrome_window_states.items.len,
-        detached_drag_window != null,
+        tab_drag.detached_window != null,
     });
 }
 
@@ -2162,18 +2213,7 @@ fn ensureTabDropIndicator(state: *ChromeWindowState) Id {
 
 fn dropIndicatorX(state: *const ChromeWindowState, insertion_index: usize) CGFloat {
     const container = state.tab_container orelse return 0;
-    const tab_count = state.tab_snapshots.items.len;
-    const area_width = titlebarTabAreaWidth(container);
-    if (tab_count == 0) return 0;
-
-    const slot_width = tabWidthForCount(tab_count, area_width);
-    const stride = slot_width + titlebar_new_tab_button_gap;
-    const raw_x = if (insertion_index == 0)
-        @as(CGFloat, 0)
-    else
-        (@as(CGFloat, @floatFromInt(insertion_index)) * stride) - (titlebar_new_tab_button_gap / 2) - (tab_drop_indicator_width / 2);
-
-    return std.math.clamp(raw_x, 0, @max(@as(CGFloat, 0), area_width - tab_drop_indicator_width));
+    return tab_strip_layout.dropIndicatorX(insertion_index, state.tab_snapshots.items.len, titlebarTabAreaWidth(container));
 }
 
 fn hideAllTabDropIndicators() void {
@@ -2224,23 +2264,10 @@ fn insertionIndexAtDocumentX(state: *const ChromeWindowState, x: CGFloat) usize 
     if (tab_count == 0) return 0;
 
     const container = state.tab_container orelse return tab_count;
-    const slot_width = tabWidthForCount(tab_count, titlebarTabAreaWidth(container));
-    const stride = slot_width + titlebar_new_tab_button_gap;
-    const clamped_x = @max(@as(CGFloat, 0), x);
-    const raw_index: usize = @intFromFloat(@floor(clamped_x / stride));
-    return @min(raw_index, tab_count);
+    return tab_strip_layout.insertionIndexAtX(x, tab_count, titlebarTabAreaWidth(container));
 }
 
-fn pointInRect(point: CGPoint, rect: CGRect) bool {
-    return point.x >= rect.origin.x and
-        point.y >= rect.origin.y and
-        point.x <= rect.origin.x + rect.size.width and
-        point.y <= rect.origin.y + rect.size.height;
-}
-
-fn absFloat(value: CGFloat) CGFloat {
-    return if (value < 0) -value else value;
-}
+const pointInRect = tab_drag_logic.pointInRect;
 
 fn webCryptoMasterKey(_: Id, _: Sel, _: Id) callconv(.c) Id {
     if (!webcrypto_master_key_initialized) {
@@ -2496,6 +2523,11 @@ fn windowDidBecomeKey(_: Id, _: Sel, notification: Id) callconv(.c) void {
     const window_handle = msg0(Id, notification, sel("object"));
     if (window_handle == null) return;
     activateChromeWindowState(window_handle);
+    // Menu commands and address-bar actions dispatch through the active
+    // sinks; without this, focusing a window by click leaves every command
+    // wired to the previously focused window's browser.
+    webview_events.activateSinkForOwner(window_handle);
+    webview_events.activateChromeSinkForOwner(window_handle);
 }
 
 fn windowWillClose(_: Id, _: Sel, notification: Id) callconv(.c) void {
@@ -2504,6 +2536,7 @@ fn windowWillClose(_: Id, _: Sel, notification: Id) callconv(.c) void {
 
     removeChromeWindowState(window_handle);
     webview_events.emitWindowClosed(window_handle);
+    std.debug.print("chrome: window closed ({d} remain)\n", .{chrome_window_states.items.len});
 }
 
 fn reload(target: Id, _: Sel, sender: Id) callconv(.c) void {
@@ -2560,7 +2593,7 @@ fn loadInternalAboutPage(webview: Id) !void {
 }
 
 fn tryLoadLocalDirectory(webview: Id, file_url: []const u8) bool {
-    const path = filePathFromUrl(file_url) catch return false;
+    const path = web_strings.filePathFromUrlAlloc(std.heap.page_allocator, file_url) catch return false;
     defer std.heap.page_allocator.free(path);
 
     const path_z = std.heap.page_allocator.dupeZ(u8, path) catch return false;
@@ -2570,7 +2603,7 @@ fn tryLoadLocalDirectory(webview: Id, file_url: []const u8) bool {
     const html = directoryListingHtml(path, file_url, dir) catch return false;
     const page_path = writeTemporaryDirectoryListing(html) catch return false;
     const page_url = localFileUrl(page_path, false) catch return false;
-    const page_url_text = fileUrlString(page_path, false) catch return false;
+    const page_url_text = web_strings.fileUrlStringAlloc(std.heap.page_allocator, page_path, false) catch return false;
     const read_access_url = localFileUrl("/", true) catch return false;
 
     _ = msg2(
@@ -2589,14 +2622,6 @@ fn localFileUrl(path: []const u8, is_directory: bool) !Id {
     const url = msg2(Id, cls("NSURL"), sel("fileURLWithPath:isDirectory:"), nsString(path_z), is_directory);
     if (url == null) return error.LocalFileUrlUnavailable;
     return url;
-}
-
-fn fileUrlString(path: []const u8, is_directory: bool) ![]u8 {
-    var output = std.ArrayList(u8).empty;
-    errdefer output.deinit(std.heap.page_allocator);
-
-    try appendFileUrl(&output, path, is_directory);
-    return output.toOwnedSlice(std.heap.page_allocator);
 }
 
 fn writeTemporaryDirectoryListing(html: []const u8) ![]const u8 {
@@ -2618,7 +2643,7 @@ fn writeTemporaryDirectoryListing(html: []const u8) ![]const u8 {
 }
 
 fn localFileUrlIsDirectory(file_url: []const u8) bool {
-    const path = filePathFromUrl(file_url) catch return false;
+    const path = web_strings.filePathFromUrlAlloc(std.heap.page_allocator, file_url) catch return false;
     defer std.heap.page_allocator.free(path);
 
     const path_z = std.heap.page_allocator.dupeZ(u8, path) catch return false;
@@ -2660,49 +2685,6 @@ fn noteLocalDirectoryLoad(webview: Id, file_url: []const u8, path: []const u8, p
     });
 }
 
-fn filePathFromUrl(file_url: []const u8) ![]u8 {
-    const prefix = "file://";
-    if (!std.mem.startsWith(u8, file_url, prefix)) return error.NotFileUrl;
-
-    var path_text = file_url[prefix.len..];
-    if (std.mem.startsWith(u8, path_text, "localhost/")) {
-        path_text = path_text["localhost".len..];
-    }
-    if (!std.mem.startsWith(u8, path_text, "/")) return error.UnsupportedFileUrl;
-
-    return percentDecode(std.heap.page_allocator, path_text);
-}
-
-fn percentDecode(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    var output = std.ArrayList(u8).empty;
-    errdefer output.deinit(allocator);
-
-    var index: usize = 0;
-    while (index < input.len) {
-        if (input[index] == '%' and index + 2 < input.len) {
-            if (hexValue(input[index + 1])) |high| {
-                if (hexValue(input[index + 2])) |low| {
-                    try output.append(allocator, (high << 4) | low);
-                    index += 3;
-                    continue;
-                }
-            }
-        }
-
-        try output.append(allocator, input[index]);
-        index += 1;
-    }
-
-    return output.toOwnedSlice(allocator);
-}
-
-fn hexValue(byte: u8) ?u8 {
-    if (byte >= '0' and byte <= '9') return byte - '0';
-    if (byte >= 'a' and byte <= 'f') return byte - 'a' + 10;
-    if (byte >= 'A' and byte <= 'F') return byte - 'A' + 10;
-    return null;
-}
-
 fn directoryListingHtml(path: []const u8, file_url: []const u8, dir: *std.c.DIR) ![]u8 {
     var html = std.ArrayList(u8).empty;
     errdefer html.deinit(std.heap.page_allocator);
@@ -2724,11 +2706,11 @@ fn directoryListingHtml(path: []const u8, file_url: []const u8, dir: *std.c.DIR)
         \\.kind{width:1.6em;text-align:center}
         \\</style><title>
     );
-    try appendEscapedHtml(&html, path);
+    try web_strings.appendEscapedHtml(&html, std.heap.page_allocator, path);
     try html.appendSlice(std.heap.page_allocator, "</title></head><body><main><h1>");
-    try appendEscapedHtml(&html, std.fs.path.basename(path));
+    try web_strings.appendEscapedHtml(&html, std.heap.page_allocator, std.fs.path.basename(path));
     try html.appendSlice(std.heap.page_allocator, "</h1><p>");
-    try appendEscapedHtml(&html, file_url);
+    try web_strings.appendEscapedHtml(&html, std.heap.page_allocator, file_url);
     try html.appendSlice(std.heap.page_allocator, "</p><ul>");
 
     while (std.c.readdir(dir)) |entry| {
@@ -2740,50 +2722,17 @@ fn directoryListingHtml(path: []const u8, file_url: []const u8, dir: *std.c.DIR)
         defer std.heap.page_allocator.free(child_path);
 
         try html.appendSlice(std.heap.page_allocator, "<li><a href=\"");
-        try appendFileUrl(&html, child_path, is_directory);
+        try web_strings.appendFileUrl(&html, std.heap.page_allocator, child_path, is_directory);
         try html.appendSlice(std.heap.page_allocator, "\"><span class=\"kind\">");
         try html.appendSlice(std.heap.page_allocator, if (is_directory) "&#128193;" else "&#128196;");
         try html.appendSlice(std.heap.page_allocator, "</span><span>");
-        try appendEscapedHtml(&html, name);
+        try web_strings.appendEscapedHtml(&html, std.heap.page_allocator, name);
         if (is_directory) try html.appendSlice(std.heap.page_allocator, "/");
         try html.appendSlice(std.heap.page_allocator, "</span></a></li>");
     }
 
     try html.appendSlice(std.heap.page_allocator, "</ul></main></body></html>");
     return html.toOwnedSlice(std.heap.page_allocator);
-}
-
-fn appendFileUrl(output: *std.ArrayList(u8), path: []const u8, is_directory: bool) !void {
-    try output.appendSlice(std.heap.page_allocator, "file://");
-    try appendPercentEncodedPath(output, path);
-    if (is_directory and !std.mem.endsWith(u8, path, "/")) {
-        try output.append(std.heap.page_allocator, '/');
-    }
-}
-
-fn appendPercentEncodedPath(output: *std.ArrayList(u8), path: []const u8) !void {
-    const hex = "0123456789ABCDEF";
-    for (path) |byte| {
-        if (std.ascii.isAlphanumeric(byte) or byte == '/' or byte == '-' or byte == '_' or byte == '.' or byte == '~') {
-            try output.append(std.heap.page_allocator, byte);
-        } else {
-            try output.append(std.heap.page_allocator, '%');
-            try output.append(std.heap.page_allocator, hex[byte >> 4]);
-            try output.append(std.heap.page_allocator, hex[byte & 0x0f]);
-        }
-    }
-}
-
-fn appendEscapedHtml(output: *std.ArrayList(u8), text: []const u8) !void {
-    for (text) |byte| {
-        switch (byte) {
-            '&' => try output.appendSlice(std.heap.page_allocator, "&amp;"),
-            '<' => try output.appendSlice(std.heap.page_allocator, "&lt;"),
-            '>' => try output.appendSlice(std.heap.page_allocator, "&gt;"),
-            '"' => try output.appendSlice(std.heap.page_allocator, "&quot;"),
-            else => try output.append(std.heap.page_allocator, byte),
-        }
-    }
 }
 
 fn decideNavigationPolicy(_: Id, _: Sel, webview: Id, navigation_action: Id, decision_handler: *NavigationDecisionHandler) callconv(.c) void {
@@ -2795,72 +2744,31 @@ fn decideNavigationPolicy(_: Id, _: Sel, webview: Id, navigation_action: Id, dec
     const raw = if (absolute != null) msg0(?[*:0]const u8, absolute, sel("UTF8String")) else null;
     const target_url = if (raw) |value| std.mem.span(value) else "";
 
-    if (webViewIsInternal(webview) and std.mem.eql(u8, target_url, "https://nimlo.internal/history/clear")) {
-        if (current_webview_target) |target| {
-            clearHistory(target, sel("clearHistory:"), @as(Id, null));
+    if (webViewIsInternal(webview)) {
+        switch (internal_routes.dispatch(webview, target_url)) {
+            .not_internal => {},
+            .handled => {
+                decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
+                return;
+            },
+            .clear_history => {
+                if (current_webview_target) |target| {
+                    clearHistory(target, sel("clearHistory:"), @as(Id, null));
+                }
+                decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
+                return;
+            },
+            .open_download_path => {
+                openDownloadPathFromRequest(target_url, false);
+                decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
+                return;
+            },
+            .reveal_download_path => {
+                openDownloadPathFromRequest(target_url, true);
+                decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
+                return;
+            },
         }
-        decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
-        return;
-    }
-
-    if (webViewIsInternal(webview) and std.mem.startsWith(u8, target_url, "https://nimlo.internal/history/delete?")) {
-        webview_events.emitHistoryUrlsDeleteRequested(webview, target_url);
-        decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
-        return;
-    }
-
-    if (webViewIsInternal(webview) and std.mem.startsWith(u8, target_url, "https://nimlo.internal/history/open?")) {
-        webview_events.emitHistoryUrlsOpenRequested(webview, target_url);
-        decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
-        return;
-    }
-
-    if (webViewIsInternal(webview) and std.mem.startsWith(u8, target_url, "https://nimlo.internal/bookmarks/tag/add?")) {
-        webview_events.emitBookmarkTagAddRequested(webview, target_url);
-        decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
-        return;
-    }
-
-    if (webViewIsInternal(webview) and std.mem.startsWith(u8, target_url, "https://nimlo.internal/bookmarks/delete?")) {
-        webview_events.emitBookmarkUrlsDeleteRequested(webview, target_url);
-        decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
-        return;
-    }
-
-    if (webViewIsInternal(webview) and std.mem.startsWith(u8, target_url, "https://nimlo.internal/bookmarks/tag/remove?")) {
-        webview_events.emitBookmarkTagRemoveRequested(webview, target_url);
-        decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
-        return;
-    }
-
-    if (webViewIsInternal(webview) and std.mem.startsWith(u8, target_url, "https://nimlo.internal/downloads/open?")) {
-        openDownloadPathFromRequest(target_url, false);
-        decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
-        return;
-    }
-
-    if (webViewIsInternal(webview) and std.mem.startsWith(u8, target_url, "https://nimlo.internal/downloads/reveal?")) {
-        openDownloadPathFromRequest(target_url, true);
-        decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
-        return;
-    }
-
-    if (webViewIsInternal(webview) and std.mem.startsWith(u8, target_url, "https://nimlo.internal/downloads/remove?")) {
-        webview_events.emitDownloadsRemoveRequested(webview, target_url);
-        decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
-        return;
-    }
-
-    if (webViewIsInternal(webview) and std.mem.eql(u8, target_url, "https://nimlo.internal/downloads/clear")) {
-        webview_events.emitDownloadsClearRequested(webview);
-        decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
-        return;
-    }
-
-    if (webViewIsInternal(webview) and isExternalWebUrl(target_url)) {
-        webview_events.emitUrlOpenRequested(target_url);
-        decision_handler.invoke(decision_handler, WKNavigationActionPolicyCancel);
-        return;
     }
 
     if (std.mem.startsWith(u8, target_url, "file://") and localFileUrlIsDirectory(target_url)) {
@@ -3004,15 +2912,9 @@ fn downloadedFileSize(path: [:0]const u8) u64 {
 }
 
 fn openDownloadPathFromRequest(request_url: []const u8, reveal: bool) void {
-    const marker = "?path=";
-    const marker_index = std.mem.indexOf(u8, request_url, marker) orelse return;
-    const encoded = request_url[marker_index + marker.len ..];
-    if (encoded.len == 0) return;
-
     const allocator = std.heap.page_allocator;
-    const path = percentDecodeAllocSentinel(allocator, encoded) catch return;
+    const path = internal_routes.pathFromActionUrl(allocator, request_url) catch return;
     defer allocator.free(path);
-    if (path.len == 0 or path[0] != '/') return;
 
     const workspace = msg0(Id, cls("NSWorkspace"), sel("sharedWorkspace"));
     if (workspace == null) return;
@@ -3025,30 +2927,6 @@ fn openDownloadPathFromRequest(request_url: []const u8, reveal: bool) void {
     }
 }
 
-fn percentDecodeAllocSentinel(allocator: std.mem.Allocator, text: []const u8) ![:0]u8 {
-    var decoded: std.ArrayList(u8) = .empty;
-    defer decoded.deinit(allocator);
-
-    var index: usize = 0;
-    while (index < text.len) {
-        const byte = text[index];
-        if (byte == '%' and index + 3 <= text.len) {
-            if (std.fmt.parseInt(u8, text[index + 1 .. index + 3], 16)) |value| {
-                try decoded.append(allocator, value);
-                index += 3;
-                continue;
-            } else |_| {}
-        }
-        try decoded.append(allocator, if (byte == '+') ' ' else byte);
-        index += 1;
-    }
-
-    return allocator.dupeZ(u8, decoded.items);
-}
-
-fn isExternalWebUrl(url: []const u8) bool {
-    return std.mem.startsWith(u8, url, "http://") or std.mem.startsWith(u8, url, "https://");
-}
 
 fn navigationStarted(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
     _ = target;
@@ -3677,6 +3555,16 @@ fn msg4(comptime ReturnType: type, receiver: Id, selector: Sel, arg1: anytype, a
     const Arg4 = @TypeOf(arg4);
     const Fn = *const fn (Id, Sel, Arg1, Arg2, Arg3, Arg4) callconv(.c) ReturnType;
     return @as(Fn, @ptrCast(&objc_msgSend))(receiver, selector, arg1, arg2, arg3, arg4);
+}
+
+fn msg5(comptime ReturnType: type, receiver: Id, selector: Sel, arg1: anytype, arg2: anytype, arg3: anytype, arg4: anytype, arg5: anytype) ReturnType {
+    const Arg1 = @TypeOf(arg1);
+    const Arg2 = @TypeOf(arg2);
+    const Arg3 = @TypeOf(arg3);
+    const Arg4 = @TypeOf(arg4);
+    const Arg5 = @TypeOf(arg5);
+    const Fn = *const fn (Id, Sel, Arg1, Arg2, Arg3, Arg4, Arg5) callconv(.c) ReturnType;
+    return @as(Fn, @ptrCast(&objc_msgSend))(receiver, selector, arg1, arg2, arg3, arg4, arg5);
 }
 
 fn msg9(

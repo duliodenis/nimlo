@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const browser = @import("../browser/browser.zig");
 const tab_model = @import("../browser/tab.zig");
@@ -281,11 +282,25 @@ fn defaultPersistenceFilePath(allocator: std.mem.Allocator, filename: []const u8
 }
 
 fn defaultAppDataDirectoryPath(allocator: std.mem.Allocator) ![]u8 {
-    if (std.c.getenv("HOME")) |home_z| {
-        return std.fmt.allocPrint(allocator, "{s}/.nimlo", .{std.mem.span(home_z)});
-    }
+    const home = homeDirectoryAlloc(allocator) catch {
+        return allocator.dupe(u8, ".nimlo");
+    };
+    defer allocator.free(home);
 
-    return allocator.dupe(u8, ".nimlo");
+    return std.fmt.allocPrint(allocator, "{s}/.nimlo", .{home});
+}
+
+fn homeDirectoryAlloc(allocator: std.mem.Allocator) ![]u8 {
+    switch (builtin.os.tag) {
+        .windows => {
+            const environ: std.process.Environ = .{ .block = .global };
+            return environ.getAlloc(allocator, "APPDATA");
+        },
+        else => {
+            const home = std.c.getenv("HOME") orelse return error.MissingHomeDirectory;
+            return allocator.dupe(u8, std.mem.span(home));
+        },
+    }
 }
 
 fn ensurePersistenceDirectory(path: []const u8) !void {

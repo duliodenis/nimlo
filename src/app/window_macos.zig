@@ -101,7 +101,19 @@ pub const MacOSWindow = struct {
     }
 
     pub fn close(self: *MacOSWindow) void {
-        msg0(void, self.handle, sel("close"));
+        // Order the window off screen immediately, then close on the next
+        // default-mode run-loop pass. A bare close can strand the window on
+        // screen as an invisible click-eating ghost (macOS 26 close fade),
+        // and callers may be inside menu dispatch or a mouse-tracking loop.
+        msg1(void, self.handle, sel("orderOut:"), @as(Id, null));
+        msg3(
+            void,
+            self.handle,
+            sel("performSelector:withObject:afterDelay:"),
+            sel("close"),
+            @as(Id, null),
+            @as(f64, 0),
+        );
     }
 
     pub fn runEventLoop(self: *MacOSWindow) !void {
@@ -115,7 +127,7 @@ pub const MacOSWindow = struct {
             webview_events.emitUrlOpenRequested(std.mem.span(url));
         }
         if (std.c.getenv("NIMLO_TEAR_OFF_TEST") != null) chrome.runTearOffSelfTest();
-        if (std.c.getenv("NIMLO_CLOSE_SOURCE_TEST") != null) chrome.runCloseSourceSelfTest();
+        if (std.c.getenv("NIMLO_CLOSE_SOURCE_TEST")) |variant| chrome.scheduleCloseSourceSelfTest(std.mem.span(variant));
         msg0(void, app, sel("run"));
     }
 
@@ -164,6 +176,9 @@ fn createNativeWindow(app: Id, title: [:0]const u8, width: u32, height: u32) !Id
     msg1(void, handle, sel("setTitle:"), nsString(title));
     msg1(void, handle, sel("setTitleVisibility:"), NSWindowTitleHidden);
     msg1(void, handle, sel("setDelegate:"), msg0(Id, app, sel("delegate")));
+    // No window open/close animations: the macOS 26 close fade can strand a
+    // closed window on screen at alpha 0, invisibly swallowing all clicks.
+    msg1(void, handle, sel("setAnimationBehavior:"), @as(isize, 2));
     return handle;
 }
 
@@ -302,6 +317,14 @@ fn msg2(comptime ReturnType: type, receiver: Id, selector: Sel, arg1: anytype, a
     const Arg2 = @TypeOf(arg2);
     const Fn = *const fn (Id, Sel, Arg1, Arg2) callconv(.c) ReturnType;
     return @as(Fn, @ptrCast(&objc_msgSend))(receiver, selector, arg1, arg2);
+}
+
+fn msg3(comptime ReturnType: type, receiver: Id, selector: Sel, arg1: anytype, arg2: anytype, arg3: anytype) ReturnType {
+    const Arg1 = @TypeOf(arg1);
+    const Arg2 = @TypeOf(arg2);
+    const Arg3 = @TypeOf(arg3);
+    const Fn = *const fn (Id, Sel, Arg1, Arg2, Arg3) callconv(.c) ReturnType;
+    return @as(Fn, @ptrCast(&objc_msgSend))(receiver, selector, arg1, arg2, arg3);
 }
 
 fn msg5(

@@ -152,6 +152,42 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_bookmarks_tests = b.addRunArtifact(bookmarks_tests);
+    const web_strings_tests = b.addTest(.{
+        .name = "web-strings-tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ui/web_strings.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_web_strings_tests = b.addRunArtifact(web_strings_tests);
+    const tab_strip_layout_tests = b.addTest(.{
+        .name = "tab-strip-layout-tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ui/tab_strip_layout.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_tab_strip_layout_tests = b.addRunArtifact(tab_strip_layout_tests);
+    const tab_drag_logic_tests = b.addTest(.{
+        .name = "tab-drag-logic-tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tab_drag_logic_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_tab_drag_logic_tests = b.addRunArtifact(tab_drag_logic_tests);
+    const internal_routes_tests = b.addTest(.{
+        .name = "internal-routes-tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/internal_routes_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_internal_routes_tests = b.addRunArtifact(internal_routes_tests);
     const downloads_tests = b.addTest(.{
         .name = "downloads-tests",
         .root_module = b.createModule(.{
@@ -215,12 +251,44 @@ pub fn build(b: *std.Build) void {
     }
     const run_browser_tests = b.addRunArtifact(browser_tests);
 
+    // Cross-compiles the stub (non-macOS) configuration so platform-specific
+    // code leaking into shared modules fails fast: `zig build check-portable`.
+    const portable_target = b.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .windows,
+    });
+    const portable_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = portable_target,
+        .optimize = optimize,
+    });
+    portable_module.addAnonymousImport("start_page_asset", .{
+        .root_source_file = b.path("assets/start_page/start_page.zig"),
+        .target = portable_target,
+        .optimize = optimize,
+    });
+    portable_module.addAnonymousImport("about_page_asset", .{
+        .root_source_file = b.path("assets/about_page/about_page.zig"),
+        .target = portable_target,
+        .optimize = optimize,
+    });
+    const portable_exe = b.addExecutable(.{
+        .name = "nimlo-portable-check",
+        .root_module = portable_module,
+    });
+    const check_portable_step = b.step("check-portable", "Compile for a non-macOS target to catch platform leaks in shared code");
+    check_portable_step.dependOn(&portable_exe.step);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_url_input_tests.step);
     test_step.dependOn(&run_tab_tests.step);
     test_step.dependOn(&run_tab_manager_tests.step);
     test_step.dependOn(&run_bookmarks_tests.step);
     test_step.dependOn(&run_bookmarks_page_tests.step);
+    test_step.dependOn(&run_web_strings_tests.step);
+    test_step.dependOn(&run_tab_strip_layout_tests.step);
+    test_step.dependOn(&run_tab_drag_logic_tests.step);
+    test_step.dependOn(&run_internal_routes_tests.step);
     test_step.dependOn(&run_downloads_tests.step);
     test_step.dependOn(&run_downloads_page_tests.step);
     test_step.dependOn(&run_history_tests.step);

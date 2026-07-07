@@ -3,7 +3,7 @@ const app = @import("app/app.zig");
 
 pub fn main() !void {
     std.debug.print("Nimlo starting...\n", .{});
-    std.debug.print("Nimlo MVP milestone 0.7\n", .{});
+    std.debug.print("Nimlo MVP milestone 0.8\n", .{});
 
     try app.run();
 }

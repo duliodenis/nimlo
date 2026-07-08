@@ -415,6 +415,12 @@ Most frequent options across both lists: `third-party` 5,964 · `popup` 3,044
   least-frequent-token selection plus a memmem fast path for bare-substring
   rules. Semantic sanity: the benchmark's ad/tracker sample URLs are blocked
   by the expected list and only that list.
+- **Phase D conversion of the real snapshots** (same harness): EasyList →
+  53,481 WebKit rules (52,892 block + 589 exception), 10.8 MB JSON in 116 ms;
+  EasyPrivacy → 55,440 rules, 11.6 MB in 120 ms. Zero rules capped or
+  unexpressible; 5 `@@$document` exceptions emitted with the documented
+  partial fidelity. Combined: 108,921 rules — under the 150k cap with ~41k
+  headroom, confirming the Phase A estimate.
 - **`$generichide`/`$elemhide` rules (167) are cosmetic-control exceptions**:
   parsing them as network exceptions would silently unblock requests — the
   parser must classify them dropped-unsupported until Phase I handles them.

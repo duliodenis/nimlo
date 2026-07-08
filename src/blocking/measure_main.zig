@@ -5,6 +5,7 @@
 const std = @import("std");
 const abp_parser = @import("abp_parser.zig");
 const matcher_mod = @import("matcher.zig");
+const webkit_rules = @import("webkit_rules.zig");
 
 pub fn main(init: std.process.Init.Minimal) !void {
     const allocator = std.heap.page_allocator;
@@ -56,5 +57,16 @@ pub fn main(init: std.process.Init.Minimal) !void {
     std.debug.print(
         "  matcher: index build {d}ms; {d} verdicts, {d} blocked, {d}ns/verdict\n",
         .{ build_ms, iterations, @divTrunc(blocked * sample_requests.len, iterations), per_verdict_ns },
+    );
+
+    const emit_start = std.Io.Timestamp.now(io, .awake);
+    const emitted = try webkit_rules.emitJson(allocator, parsed.network, webkit_rules.default_rule_cap);
+    defer allocator.free(emitted.json);
+    const emit_ms = emit_start.durationTo(std.Io.Timestamp.now(io, .awake)).toMilliseconds();
+
+    const e = emitted.stats;
+    std.debug.print(
+        "  webkit: {d} rules ({d} block, {d} exception) in {d}ms, {d}KB JSON; capped={d} unexpressible={d} doc_exceptions_partial={d}\n",
+        .{ e.emitted_total, e.emitted_blocks, e.emitted_exceptions, emit_ms, emitted.json.len / 1024, e.capped_blocks, e.dropped_unexpressible, e.document_exceptions_partial },
     );
 }

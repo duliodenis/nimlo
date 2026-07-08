@@ -195,6 +195,15 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_abp_parser_tests = b.addRunArtifact(abp_parser_tests);
+    const blocking_matcher_tests = b.addTest(.{
+        .name = "blocking-matcher-tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/blocking/matcher.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_blocking_matcher_tests = b.addRunArtifact(blocking_matcher_tests);
     const webview2_tests = b.addTest(.{
         .name = "webview2-tests",
         .root_module = b.createModule(.{
@@ -313,6 +322,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_tab_drag_logic_tests.step);
     test_step.dependOn(&run_internal_routes_tests.step);
     test_step.dependOn(&run_abp_parser_tests.step);
+    test_step.dependOn(&run_blocking_matcher_tests.step);
     test_step.dependOn(&run_webview2_tests.step);
     test_step.dependOn(&run_downloads_tests.step);
     test_step.dependOn(&run_downloads_page_tests.step);

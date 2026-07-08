@@ -150,14 +150,6 @@ fn parseNetworkLine(
         line = line[2..];
     }
 
-    // Raw regex rules: the whole body is /…/, optionally with options.
-    if (line.len >= 2 and line[0] == '/') {
-        if (line[line.len - 1] == '/' or std.mem.indexOf(u8, line, "/$") != null) {
-            stats.dropped_regex += 1;
-            return;
-        }
-    }
-
     // Options live after the last '$' whose suffix uses the option charset;
     // otherwise the '$' belongs to the URL pattern.
     var pattern = line;
@@ -168,6 +160,13 @@ fn parseNetworkLine(
             pattern = line[0..dollar];
             options_text = suffix;
         }
+    }
+
+    // Raw regex rules: after options are removed, a body delimited by
+    // slashes is a regular expression (ABP semantics).
+    if (pattern.len >= 2 and pattern[0] == '/' and pattern[pattern.len - 1] == '/') {
+        stats.dropped_regex += 1;
+        return;
     }
 
     var soft_ignored = false;
@@ -469,6 +468,15 @@ test "regex rules drop" {
 
     try std.testing.expectEqual(@as(usize, 0), parsed.network.len);
     try std.testing.expectEqual(@as(usize, 2), parsed.stats.dropped_regex);
+}
+
+test "slash-delimited path pattern with options is not a regex" {
+    var parsed = try parseSingle("/adserver/x$script");
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), parsed.network.len);
+    try std.testing.expectEqualStrings("/adserver/x", parsed.network[0].pattern);
+    try std.testing.expect(parsed.network[0].types.script);
 }
 
 test "dollar inside a URL pattern is not an options separator" {

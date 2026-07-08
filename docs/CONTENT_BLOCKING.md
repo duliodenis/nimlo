@@ -407,6 +407,14 @@ Most frequent options across both lists: `third-party` 5,964 · `popup` 3,044
   degraded to network exceptions); EasyPrivacy 56,268 lines in 5 ms →
   55,440 network+exceptions accepted, 56 dropped. Overall survival 99.4%;
   parse cost is negligible against the well-under-a-second budget.
+- **Phase C matcher benchmark** (same harness, ReleaseFast): index build
+  137 ms / 40 ms; verdicts at 2.5 µs (EasyList) and 20 µs (EasyPrivacy —
+  its bare-substring tracker patterns concentrate in the tokenless bucket)
+  per request against the full lists. Both are far under the 1 ms budget;
+  if the tokenless bucket ever becomes a problem, the upgrade path is uBO's
+  least-frequent-token selection plus a memmem fast path for bare-substring
+  rules. Semantic sanity: the benchmark's ad/tracker sample URLs are blocked
+  by the expected list and only that list.
 - **`$generichide`/`$elemhide` rules (167) are cosmetic-control exceptions**:
   parsing them as network exceptions would silently unblock requests — the
   parser must classify them dropped-unsupported until Phase I handles them.

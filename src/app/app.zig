@@ -3,6 +3,8 @@ const std = @import("std");
 const browser = @import("../browser/browser.zig");
 const tab_model = @import("../browser/tab.zig");
 const preferences = @import("../storage/preferences.zig");
+const filter_lists = @import("../storage/filter_lists.zig");
+const filter_assets = @import("filter_lists_asset");
 const private_mode = @import("../privacy/private_mode.zig");
 const window = @import("window.zig");
 const webview = @import("../webview/webview_adapter.zig");
@@ -39,6 +41,8 @@ const AppController = struct {
     history_path: []const u8,
     bookmarks_path: []const u8,
     downloads_path: []const u8,
+    filters_dir_path: []const u8,
+    filter_store: filter_lists.FilterListStore,
     sessions: std.ArrayList(*BrowserWindowSession),
 
     fn init(allocator: std.mem.Allocator) !AppController {
@@ -55,6 +59,16 @@ const AppController = struct {
         const downloads_path = try defaultDownloadsPersistencePath(allocator);
         errdefer allocator.free(downloads_path);
 
+        const filters_dir_path = try std.fmt.allocPrint(allocator, "{s}/filters", .{data_dir_path});
+        errdefer allocator.free(filters_dir_path);
+        try ensurePersistenceDirectory(filters_dir_path);
+
+        var filter_store = filter_lists.FilterListStore.init(allocator);
+        errdefer filter_store.deinit();
+        initFilterLists(&filter_store, filters_dir_path) catch |err| {
+            std.debug.print("filter list setup failed: {s}\n", .{@errorName(err)});
+        };
+
         return .{
             .allocator = allocator,
             .config = preferences.Preferences.default(),
@@ -63,6 +77,8 @@ const AppController = struct {
             .history_path = history_path,
             .bookmarks_path = bookmarks_path,
             .downloads_path = downloads_path,
+            .filters_dir_path = filters_dir_path,
+            .filter_store = filter_store,
             .sessions = .empty,
         };
     }
@@ -73,6 +89,8 @@ const AppController = struct {
             self.allocator.destroy(session);
         }
         self.sessions.deinit(self.allocator);
+        self.filter_store.deinit();
+        self.allocator.free(self.filters_dir_path);
         self.allocator.free(self.downloads_path);
         self.allocator.free(self.bookmarks_path);
         self.allocator.free(self.history_path);
@@ -305,4 +323,39 @@ fn homeDirectoryAlloc(allocator: std.mem.Allocator) ![]u8 {
 
 fn ensurePersistenceDirectory(path: []const u8) !void {
     try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, path);
+}
+
+// Loads the filter-list catalog and, on first run, seeds it with the
+// bundled EasyList/EasyPrivacy snapshots so blocking works offline
+// (docs/CONTENT_BLOCKING.md, Phase E).
+fn initFilterLists(store: *filter_lists.FilterListStore, filters_dir_path: []const u8) !void {
+    const io = std.Options.debug_io;
+    var dir = try std.Io.Dir.cwd().openDir(io, filters_dir_path, .{});
+    defer dir.close(io);
+
+    store.loadFromFile(dir, io, "lists.jsonl") catch |err| {
+        std.debug.print("filter list catalog load failed: {s}\n", .{@errorName(err)});
+    };
+
+    var seeded = false;
+    if (try store.ensureDefault(dir, io, ".", .{
+        .id = "easylist",
+        .name = "EasyList",
+        .source_url = "https://easylist.to/easylist/easylist.txt",
+        .enabled = true,
+        .updated_at = 0,
+    }, filter_assets.easylist)) seeded = true;
+    if (try store.ensureDefault(dir, io, ".", .{
+        .id = "easyprivacy",
+        .name = "EasyPrivacy",
+        .source_url = "https://easylist.to/easylist/easyprivacy.txt",
+        .enabled = true,
+        .updated_at = 0,
+    }, filter_assets.easyprivacy)) seeded = true;
+
+    if (seeded) {
+        try store.saveToFile(dir, io, "lists.jsonl");
+        std.debug.print("content blocking: seeded bundled filter lists.\n", .{});
+    }
+    std.debug.print("content blocking: {d} filter lists in catalog.\n", .{store.records().len});
 }

@@ -213,6 +213,24 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_webkit_rules_tests = b.addRunArtifact(webkit_rules_tests);
+    const filter_lists_tests = b.addTest(.{
+        .name = "filter-lists-tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/storage/filter_lists.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_filter_lists_tests = b.addRunArtifact(filter_lists_tests);
+    const list_update_tests = b.addTest(.{
+        .name = "list-update-tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/list_update_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_list_update_tests = b.addRunArtifact(list_update_tests);
     const webview2_tests = b.addTest(.{
         .name = "webview2-tests",
         .root_module = b.createModule(.{
@@ -333,6 +351,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_abp_parser_tests.step);
     test_step.dependOn(&run_blocking_matcher_tests.step);
     test_step.dependOn(&run_webkit_rules_tests.step);
+    test_step.dependOn(&run_filter_lists_tests.step);
+    test_step.dependOn(&run_list_update_tests.step);
     test_step.dependOn(&run_webview2_tests.step);
     test_step.dependOn(&run_downloads_tests.step);
     test_step.dependOn(&run_downloads_page_tests.step);
@@ -354,6 +374,11 @@ fn createNimloModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: 
     });
     module.addAnonymousImport("about_page_asset", .{
         .root_source_file = b.path("assets/about_page/about_page.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    module.addAnonymousImport("filter_lists_asset", .{
+        .root_source_file = b.path("assets/filters/filter_assets.zig"),
         .target = target,
         .optimize = optimize,
     });

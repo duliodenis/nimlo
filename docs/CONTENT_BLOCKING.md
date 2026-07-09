@@ -421,6 +421,15 @@ Most frequent options across both lists: `third-party` 5,964 · `popup` 3,044
   unexpressible; 5 `@@$document` exceptions emitted with the documented
   partial fidelity. Combined: 108,921 rules — under the 150k cap with ~41k
   headroom, confirming the Phase A estimate.
+- **Phase E verified 2026-07-08**: first app launch seeds
+  `~/.nimlo/filters/` from the bundled snapshots and persists the catalog;
+  second launch loads without re-seeding. The `std.http.Client` TLS risk did
+  **not** materialize: `zig run src/update_lists_main.zig -- <dir>` fetched
+  the live EasyList from easylist.to and applied 77,710 rules through the
+  validate-then-rename path. Deviation from plan: the GET is unconditional
+  for 0.8 — capturing the response ETag needs std.http's lower-level request
+  API; the catalog already persists an `etag` field so conditional GET can
+  be added without a schema change.
 - **`$generichide`/`$elemhide` rules (167) are cosmetic-control exceptions**:
   parsing them as network exceptions would silently unblock requests — the
   parser must classify them dropped-unsupported until Phase I handles them.

@@ -1,6 +1,8 @@
 const std = @import("std");
 const url_input = @import("../browser/url_input.zig");
 const about_page = @import("about_page.zig");
+const blocking_selftest_page = @import("blocking_selftest_page.zig");
+const content_blocking = @import("../webview/content_blocking_macos.zig");
 const start_page = @import("start_page.zig");
 const internal_routes = @import("internal_routes.zig");
 const tab_drag_logic = @import("tab_drag_logic.zig");
@@ -1346,6 +1348,12 @@ fn installAddressBarTargetClass() void {
     );
     _ = c.class_addMethod(
         target_class,
+        c.sel_registerName("runScheduledBlockingSelfTest:"),
+        @ptrCast(&runScheduledBlockingSelfTest),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
         c.sel_registerName("showDownloads:"),
         @ptrCast(&showDownloads),
         "v@:@",
@@ -1924,6 +1932,81 @@ var scheduled_close_test_variant_len: usize = 0;
 
 // Defers the close-source self-test until the run loop is live, so window
 // creation goes through real key-window notifications like user interaction.
+// NIMLO_BLOCKING_TEST: waits for the rule lists to finish compiling, loads
+// the self-test page into the active webview, then polls its title for the
+// verdict the page computed (docs/CONTENT_BLOCKING.md, Phase F).
+var blocking_test_ticks: usize = 0;
+var blocking_test_page_loaded = false;
+
+pub fn scheduleBlockingSelfTest() void {
+    blocking_test_ticks = 0;
+    blocking_test_page_loaded = false;
+    scheduleBlockingSelfTestTick();
+}
+
+fn scheduleBlockingSelfTestTick() void {
+    const target = current_webview_target orelse {
+        std.debug.print("blocking self test: FAIL (no webview target)\n", .{});
+        return;
+    };
+    _ = msg5(
+        Id,
+        cls("NSTimer"),
+        sel("scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:"),
+        @as(f64, 0.5),
+        target,
+        sel("runScheduledBlockingSelfTest:"),
+        @as(Id, null),
+        false,
+    );
+}
+
+fn runScheduledBlockingSelfTest(_: Id, _: Sel, _: Id) callconv(.c) void {
+    blocking_test_ticks += 1;
+    if (blocking_test_ticks > 60) {
+        std.debug.print("blocking self test: FAIL (timed out; {d} lists active)\n", .{content_blocking.activeListCount()});
+        return;
+    }
+
+    if (content_blocking.pendingListCount() > 0) {
+        scheduleBlockingSelfTestTick();
+        return;
+    }
+
+    const webview = getIvar(current_webview_target, "webView") orelse {
+        std.debug.print("blocking self test: FAIL (no active webview)\n", .{});
+        return;
+    };
+
+    if (!blocking_test_page_loaded) {
+        blocking_test_page_loaded = true;
+        _ = msg2(
+            Id,
+            webview,
+            sel("loadHTMLString:baseURL:"),
+            nsString(blocking_selftest_page.html),
+            @as(Id, null),
+        );
+        noteInternalLoadForUrl(webview, blocking_selftest_page.url);
+        scheduleBlockingSelfTestTick();
+        return;
+    }
+
+    const title_id = msg0(Id, webview, sel("title"));
+    const title_utf8 = if (title_id != null) msg0(?[*:0]const u8, title_id, sel("UTF8String")) else null;
+    const title = if (title_utf8) |value| std.mem.span(value) else "";
+
+    if (std.mem.eql(u8, title, blocking_selftest_page.title_blocked_ok)) {
+        std.debug.print("blocking self test: {s} ({d} rule lists active)\n", .{ title, content_blocking.activeListCount() });
+        return;
+    }
+    if (std.mem.eql(u8, title, blocking_selftest_page.title_fail)) {
+        std.debug.print("blocking self test: FAIL (rules not applied; {d} lists active)\n", .{content_blocking.activeListCount()});
+        return;
+    }
+    scheduleBlockingSelfTestTick();
+}
+
 pub fn scheduleCloseSourceSelfTest(variant: []const u8) void {
     const len = @min(variant.len, scheduled_close_test_variant_buffer.len);
     @memcpy(scheduled_close_test_variant_buffer[0..len], variant[0..len]);

@@ -438,6 +438,32 @@ Most frequent options across both lists: `third-party` 5,964 · `popup` 3,044
   (stricter-than-default) has no clear semantics yet → 0.8 ships allow-only
   (Phase G item 2 resolved).
 
+### Phase F verified 2026-07-08 (macOS enforcement live)
+
+- **WebKit's compiler accepted the full converted lists on the first
+  attempt**: `easylist-<hash>` (53,481 rules) and `easyprivacy-<hash>`
+  (55,440 rules) compiled with zero errors — external ground-truth
+  validation of the Phase D emitter. First-run compile takes ~40 s in a
+  debug build; subsequent launches load all lists from the
+  `~/.nimlo/filters/compiled` cache (content-hash identifiers) and are
+  ready in seconds, compiling nothing.
+- **`NIMLO_BLOCKING_TEST=1` is green**: `blocking self test: BLOCKED-OK
+  (3 rule lists active)` on both cold-compile and cached runs. The
+  css-display-none observability trick works for `loadHTMLString` pages.
+- **Hard-won lesson (encoded as a comment in
+  `content_blocking_macos.zig`)**: Zig-built ObjC completion blocks must
+  outlive their invoke — the runtime reads the block's flags in
+  `_Block_release` *after* invoke returns, so freeing the block inside its
+  own callback is a use-after-free (page_allocator unmaps → segfault in
+  `libsystem_blocks`). One-shot blocks are deliberately leaked (~48 bytes
+  per rule list per launch).
+- Deviations, both deferred not dropped: the main-frame matcher fallback
+  in `decidePolicyForNavigationAction` moves to Phase G (it belongs with
+  the app-owned engine state that per-site policies introduce), and the
+  "toggle affects every window" gate item moves to Phase H, which adds the
+  first toggle trigger. The enable/disable plumbing
+  (`attachToController`/`forgetController` registry) is in place.
+
 ## Definition of done (0.8)
 
 Every README 0.8 checkbox true on macOS: research documented here (A);

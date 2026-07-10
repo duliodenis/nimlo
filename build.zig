@@ -231,6 +231,22 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_list_update_tests = b.addRunArtifact(list_update_tests);
+    const content_blocking_tests = b.addTest(.{
+        .name = "content-blocking-tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/content_blocking_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    // The comptime platform switch pulls the objc-backed macOS
+    // implementation into this test's module graph on macOS hosts.
+    if (target.result.os.tag == .macos) {
+        content_blocking_tests.root_module.linkSystemLibrary("c", .{});
+        content_blocking_tests.root_module.linkSystemLibrary("objc", .{});
+    }
+    addMacosSdkPaths(b, content_blocking_tests.root_module, target);
+    const run_content_blocking_tests = b.addRunArtifact(content_blocking_tests);
     const webview2_tests = b.addTest(.{
         .name = "webview2-tests",
         .root_module = b.createModule(.{
@@ -353,6 +369,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_webkit_rules_tests.step);
     test_step.dependOn(&run_filter_lists_tests.step);
     test_step.dependOn(&run_list_update_tests.step);
+    test_step.dependOn(&run_content_blocking_tests.step);
     test_step.dependOn(&run_webview2_tests.step);
     test_step.dependOn(&run_downloads_tests.step);
     test_step.dependOn(&run_downloads_page_tests.step);

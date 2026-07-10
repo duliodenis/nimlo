@@ -5,6 +5,9 @@ const tab_model = @import("../browser/tab.zig");
 const preferences = @import("../storage/preferences.zig");
 const filter_lists = @import("../storage/filter_lists.zig");
 const filter_assets = @import("filter_lists_asset");
+const abp_parser = @import("../blocking/abp_parser.zig");
+const webkit_rules = @import("../blocking/webkit_rules.zig");
+const content_blocking = @import("../webview/content_blocking.zig");
 const private_mode = @import("../privacy/private_mode.zig");
 const window = @import("window.zig");
 const webview = @import("../webview/webview_adapter.zig");
@@ -67,6 +70,9 @@ const AppController = struct {
         errdefer filter_store.deinit();
         initFilterLists(&filter_store, filters_dir_path) catch |err| {
             std.debug.print("filter list setup failed: {s}\n", .{@errorName(err)});
+        };
+        installContentBlocking(allocator, &filter_store, filters_dir_path) catch |err| {
+            std.debug.print("content blocking setup failed: {s}\n", .{@errorName(err)});
         };
 
         return .{
@@ -358,4 +364,76 @@ fn initFilterLists(store: *filter_lists.FilterListStore, filters_dir_path: []con
         std.debug.print("content blocking: seeded bundled filter lists.\n", .{});
     }
     std.debug.print("content blocking: {d} filter lists in catalog.\n", .{store.records().len});
+}
+
+// Converts every enabled filter list to the platform's rule payload and
+// hands the batch over for compilation (docs/CONTENT_BLOCKING.md, Phase F).
+// Identifiers carry a content hash so unchanged lists hit the platform's
+// compile cache and steady-state startups compile nothing.
+fn installContentBlocking(
+    allocator: std.mem.Allocator,
+    store: *filter_lists.FilterListStore,
+    filters_dir_path: []const u8,
+) !void {
+    if (!content_blocking.wantsRuleListPayloads()) return;
+
+    const io = std.Options.debug_io;
+    var dir = try std.Io.Dir.cwd().openDir(io, filters_dir_path, .{});
+    defer dir.close(io);
+
+    var sources: std.ArrayList(content_blocking.RuleListSource) = .empty;
+    defer {
+        for (sources.items) |source| {
+            if (!std.mem.eql(u8, source.identifier, content_blocking.selftest_identifier)) {
+                allocator.free(source.identifier);
+                allocator.free(source.json);
+            }
+        }
+        sources.deinit(allocator);
+    }
+
+    // The self-test rules are always installed; they are inert outside
+    // NIMLO_BLOCKING_TEST (a reserved element id and a reserved host).
+    try sources.append(allocator, .{
+        .identifier = content_blocking.selftest_identifier,
+        .json = content_blocking.selftest_rules_json,
+    });
+
+    for (store.records()) |record| {
+        if (!record.enabled) continue;
+
+        const text = filter_lists.readListText(dir, io, allocator, ".", record.id) catch |err| {
+            std.debug.print("content blocking: cannot read list {s}: {s}\n", .{ record.id, @errorName(err) });
+            continue;
+        };
+        defer allocator.free(text);
+
+        var parsed = abp_parser.parseList(allocator, text) catch |err| {
+            std.debug.print("content blocking: cannot parse list {s}: {s}\n", .{ record.id, @errorName(err) });
+            continue;
+        };
+        defer parsed.deinit();
+
+        const emitted = try webkit_rules.emitJson(allocator, parsed.network, webkit_rules.default_rule_cap);
+        errdefer allocator.free(emitted.json);
+        const identifier = try std.fmt.allocPrint(allocator, "{s}-{x}", .{
+            record.id,
+            std.hash.Wyhash.hash(0, text),
+        });
+        errdefer allocator.free(identifier);
+
+        try sources.append(allocator, .{ .identifier = identifier, .json = emitted.json });
+        std.debug.print("content blocking: {s} → {d} WebKit rules ({d} capped, {d} unexpressible).\n", .{
+            record.id,
+            emitted.stats.emitted_total,
+            emitted.stats.capped_blocks,
+            emitted.stats.dropped_unexpressible,
+        });
+    }
+
+    const compiled_dir_path = try std.fmt.allocPrint(allocator, "{s}/compiled", .{filters_dir_path});
+    defer allocator.free(compiled_dir_path);
+    try ensurePersistenceDirectory(compiled_dir_path);
+
+    content_blocking.installRuleLists(compiled_dir_path, sources.items);
 }

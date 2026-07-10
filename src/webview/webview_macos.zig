@@ -1,5 +1,6 @@
 const std = @import("std");
 const chrome = @import("../ui/chrome_macos.zig");
+const content_blocking = @import("content_blocking_macos.zig");
 const webview_events = @import("webview_events.zig");
 
 const c = @cImport({
@@ -110,6 +111,8 @@ pub const MacOSWebView = struct {
         for (self.webviews.items, 0..) |webview, index| {
             if (webview != handle) continue;
 
+            const configuration = msg0(Id, webview, sel("configuration"));
+            content_blocking.forgetController(msg0(Id, configuration, sel("userContentController")));
             msg0(void, webview, sel("stopLoading"));
             msg1(void, webview, sel("setNavigationDelegate:"), @as(Id, null));
             msg0(void, webview, sel("removeFromSuperview"));
@@ -170,6 +173,11 @@ pub const MacOSWebView = struct {
             configuration,
         );
         if (webview == null) return error.MacOSWebViewUnavailable;
+
+        // Register against the webview's own (post-copy) configuration so
+        // compiled rule lists reach the controller WebKit actually consults.
+        const live_configuration = msg0(Id, webview, sel("configuration"));
+        content_blocking.attachToController(msg0(Id, live_configuration, sel("userContentController")));
 
         msg1(void, webview, sel("setAutoresizingMask:"), NSViewFlexibleSize);
         msg1(void, webview, sel("setHidden:"), hidden);

@@ -39,11 +39,11 @@ pub fn wantsRuleListPayloads() bool {
     return platform.wantsRuleListPayloads();
 }
 
-/// Hands rule payloads to the platform for compilation and attachment to
-/// every current and future webview. Callers keep ownership of `sources`;
-/// the platform copies what it needs before returning.
-pub fn installRuleLists(compiled_store_path: []const u8, sources: []const RuleListSource) void {
-    platform.installRuleLists(compiled_store_path, sources);
+/// Replaces the platform's full rule-list set (initial install and every
+/// per-site policy rebuild). Callers keep ownership of `sources`; the
+/// platform copies what it needs before returning.
+pub fn setRuleLists(compiled_store_path: []const u8, sources: []const RuleListSource) void {
+    platform.setRuleLists(compiled_store_path, sources);
 }
 
 /// Rule lists still being looked up or compiled; 0 = steady state.

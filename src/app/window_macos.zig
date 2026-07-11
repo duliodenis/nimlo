@@ -128,7 +128,13 @@ pub const MacOSWindow = struct {
         }
         if (std.c.getenv("NIMLO_TEAR_OFF_TEST") != null) chrome.runTearOffSelfTest();
         if (std.c.getenv("NIMLO_CLOSE_SOURCE_TEST")) |variant| chrome.scheduleCloseSourceSelfTest(std.mem.span(variant));
-        if (std.c.getenv("NIMLO_BLOCKING_TEST") != null) chrome.scheduleBlockingSelfTest();
+        if (std.c.getenv("NIMLO_BLOCKING_TEST")) |variant| {
+            if (std.mem.eql(u8, std.mem.span(variant), "allow")) {
+                chrome.scheduleBlockingAllowSelfTest();
+            } else {
+                chrome.scheduleBlockingSelfTest();
+            }
+        }
         msg0(void, app, sel("run"));
     }
 

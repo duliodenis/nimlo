@@ -231,6 +231,15 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_list_update_tests = b.addRunArtifact(list_update_tests);
+    const site_policies_tests = b.addTest(.{
+        .name = "site-policies-tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/storage/site_policies.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_site_policies_tests = b.addRunArtifact(site_policies_tests);
     const content_blocking_tests = b.addTest(.{
         .name = "content-blocking-tests",
         .root_module = b.createModule(.{
@@ -369,6 +378,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_webkit_rules_tests.step);
     test_step.dependOn(&run_filter_lists_tests.step);
     test_step.dependOn(&run_list_update_tests.step);
+    test_step.dependOn(&run_site_policies_tests.step);
     test_step.dependOn(&run_content_blocking_tests.step);
     test_step.dependOn(&run_webview2_tests.step);
     test_step.dependOn(&run_downloads_tests.step);

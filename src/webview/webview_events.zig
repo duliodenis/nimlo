@@ -22,6 +22,8 @@ pub const TabSnapshot = struct {
     is_active: bool,
     can_bookmark: bool = false,
     is_bookmarked: bool = false,
+    /// Content blocking is disabled for this tab's site (per-site allow).
+    is_site_allowed: bool = false,
 };
 
 pub const DetachedTab = struct {
@@ -101,6 +103,10 @@ pub const EventSink = struct {
     on_download_failed: ?*const fn (context: *anyopaque, id: u64) void = null,
     on_downloads_remove_requested: ?*const fn (context: *anyopaque, source_handle: ?*anyopaque, request_url: []const u8) void = null,
     on_downloads_clear_requested: ?*const fn (context: *anyopaque, source_handle: ?*anyopaque) void = null,
+    on_blocking_site_allow_requested: ?*const fn (context: *anyopaque, source_handle: ?*anyopaque, request_url: []const u8) void = null,
+    on_blocking_site_remove_requested: ?*const fn (context: *anyopaque, source_handle: ?*anyopaque, request_url: []const u8) void = null,
+    // Flip the per-site allow policy for the active tab's host (shield).
+    on_blocking_site_toggle_requested: ?*const fn (context: *anyopaque) void = null,
 };
 
 pub const ChromeSink = struct {
@@ -115,6 +121,9 @@ pub const ChromeSink = struct {
 pub const AppSink = struct {
     context: *anyopaque,
     on_new_window_requested: ?*const fn (context: *anyopaque) void = null,
+    // Per-site blocking policies changed on disk; the app layer rebuilds
+    // and re-installs the platform rule lists.
+    on_blocking_site_policies_changed: ?*const fn (context: *anyopaque) void = null,
     on_window_closed: ?*const fn (context: *anyopaque, window_handle: ?*anyopaque) void = null,
     on_tab_detached: ?*const fn (context: *anyopaque, tab: DetachedTab) void = null,
     on_tab_detached_from_source: ?*const fn (context: *anyopaque, request: TabDetachRequest) ?*anyopaque = null,
@@ -352,6 +361,38 @@ pub fn emitDownloadsClearRequested(source_handle: ?*anyopaque) void {
     if (current_sink) |sink| {
         if (sink.on_downloads_clear_requested) |callback| {
             callback(sink.context, source_handle);
+        }
+    }
+}
+
+pub fn emitBlockingSiteAllowRequested(source_handle: ?*anyopaque, request_url: []const u8) void {
+    if (current_sink) |sink| {
+        if (sink.on_blocking_site_allow_requested) |callback| {
+            callback(sink.context, source_handle, request_url);
+        }
+    }
+}
+
+pub fn emitBlockingSiteRemoveRequested(source_handle: ?*anyopaque, request_url: []const u8) void {
+    if (current_sink) |sink| {
+        if (sink.on_blocking_site_remove_requested) |callback| {
+            callback(sink.context, source_handle, request_url);
+        }
+    }
+}
+
+pub fn emitBlockingSiteToggleRequested() void {
+    if (current_sink) |sink| {
+        if (sink.on_blocking_site_toggle_requested) |callback| {
+            callback(sink.context);
+        }
+    }
+}
+
+pub fn emitBlockingSitePoliciesChanged() void {
+    if (current_app_sink) |sink| {
+        if (sink.on_blocking_site_policies_changed) |callback| {
+            callback(sink.context);
         }
     }
 }

@@ -1,6 +1,9 @@
 const std = @import("std");
+const blocking_matcher = @import("../blocking/matcher.zig");
 const bookmarks = @import("../storage/bookmarks.zig");
 const downloads = @import("../storage/downloads.zig");
+const internal_routes = @import("../ui/internal_routes.zig");
+const site_policies = @import("../storage/site_policies.zig");
 const downloads_page = @import("../ui/downloads_page.zig");
 const history = @import("../storage/history.zig");
 const preferences = @import("../storage/preferences.zig");
@@ -29,6 +32,9 @@ pub const Browser = struct {
     downloads: downloads.DownloadStore,
     downloads_persistence_dir: ?std.Io.Dir,
     downloads_persistence_path: ?[]const u8,
+    site_policies: site_policies.SitePolicyStore,
+    site_policies_persistence_dir: ?std.Io.Dir,
+    site_policies_persistence_path: ?[]const u8,
     webview_adapter: *webview.WebViewAdapter,
     last_published_tabs: std.ArrayList(webview_events.TabSnapshot),
 
@@ -54,6 +60,9 @@ pub const Browser = struct {
             .downloads = downloads.DownloadStore.init(allocator),
             .downloads_persistence_dir = null,
             .downloads_persistence_path = null,
+            .site_policies = site_policies.SitePolicyStore.init(allocator),
+            .site_policies_persistence_dir = null,
+            .site_policies_persistence_path = null,
             .webview_adapter = adapter,
             .last_published_tabs = .empty,
         };
@@ -97,6 +106,24 @@ pub const Browser = struct {
         self.downloads_persistence_dir = dir;
         self.downloads_persistence_path = owned_path;
         try self.downloads.saveToFile(dir, std.Options.debug_io, owned_path);
+    }
+
+    pub fn enableSitePolicyPersistence(self: *Browser, path: []const u8) !void {
+        try self.enableSitePolicyPersistenceInDir(std.Io.Dir.cwd(), path);
+    }
+
+    pub fn enableSitePolicyPersistenceInDir(self: *Browser, dir: std.Io.Dir, path: []const u8) !void {
+        const owned_path = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(owned_path);
+
+        try self.site_policies.loadFromFile(dir, std.Options.debug_io, owned_path);
+
+        if (self.site_policies_persistence_path) |old_path| {
+            self.allocator.free(old_path);
+        }
+        self.site_policies_persistence_dir = dir;
+        self.site_policies_persistence_path = owned_path;
+        try self.site_policies.saveToFile(dir, std.Options.debug_io, owned_path);
     }
 
     pub fn enableHistoryPersistenceInDir(self: *Browser, dir: std.Io.Dir, path: []const u8) !void {
@@ -151,6 +178,9 @@ pub const Browser = struct {
             .on_download_failed = handleDownloadFailed,
             .on_downloads_remove_requested = handleDownloadsRemoveRequested,
             .on_downloads_clear_requested = handleDownloadsClearRequested,
+            .on_blocking_site_allow_requested = handleBlockingSiteAllowRequested,
+            .on_blocking_site_remove_requested = handleBlockingSiteRemoveRequested,
+            .on_blocking_site_toggle_requested = handleBlockingSiteToggleRequested,
         });
         self.publishTabsChanged();
     }
@@ -193,6 +223,10 @@ pub const Browser = struct {
         self.last_published_tabs.deinit(self.allocator);
         self.bookmarks.deinit();
         if (self.bookmarks_persistence_path) |path| {
+            self.allocator.free(path);
+        }
+        self.site_policies.deinit();
+        if (self.site_policies_persistence_path) |path| {
             self.allocator.free(path);
         }
         self.history.deinit();
@@ -286,6 +320,50 @@ pub const Browser = struct {
     fn handleBookmarkCurrentPageToggleRequested(context: *anyopaque) void {
         const self: *Browser = @ptrCast(@alignCast(context));
         self.toggleBookmarkCurrentPage() catch return;
+    }
+
+    fn handleBlockingSiteAllowRequested(context: *anyopaque, source_handle: ?*anyopaque, request_url: []const u8) void {
+        const self: *Browser = @ptrCast(@alignCast(context));
+        _ = source_handle;
+        const host = internal_routes.hostFromActionUrl(self.allocator, request_url) catch return;
+        defer self.allocator.free(host);
+        self.setSiteAllowed(host, true);
+    }
+
+    fn handleBlockingSiteRemoveRequested(context: *anyopaque, source_handle: ?*anyopaque, request_url: []const u8) void {
+        const self: *Browser = @ptrCast(@alignCast(context));
+        _ = source_handle;
+        const host = internal_routes.hostFromActionUrl(self.allocator, request_url) catch return;
+        defer self.allocator.free(host);
+        self.setSiteAllowed(host, false);
+    }
+
+    // Shield toggle: flip the allow policy for the active tab's host.
+    fn handleBlockingSiteToggleRequested(context: *anyopaque) void {
+        const self: *Browser = @ptrCast(@alignCast(context));
+        const tab = self.tabs.activeTab() orelse return;
+        const host = hostOfUrl(tab.current_url) orelse return;
+        self.setSiteAllowed(host, !self.site_policies.isAllowed(host));
+    }
+
+    fn setSiteAllowed(self: *Browser, host: []const u8, allowed: bool) void {
+        const changed = if (allowed)
+            self.site_policies.allow(host, currentTimestamp()) catch return
+        else
+            self.site_policies.remove(host);
+        if (!changed) return;
+
+        if (self.site_policies_persistence_path) |path| {
+            const dir = self.site_policies_persistence_dir orelse std.Io.Dir.cwd();
+            self.site_policies.saveToFile(dir, std.Options.debug_io, path) catch |err| {
+                std.debug.print("site policy save failed: {s}\n", .{@errorName(err)});
+            };
+        }
+
+        // The app layer re-reads the policy file and rebuilds the platform
+        // rule lists; enforcement changes apply on the next navigation.
+        webview_events.emitBlockingSitePoliciesChanged();
+        self.publishTabsChanged();
     }
 
     fn handleInternalPageReloadRequested(context: *anyopaque, source_handle: ?*anyopaque, url: []const u8) void {
@@ -758,6 +836,7 @@ pub const Browser = struct {
                 .is_active = self.tabs.active_tab_id != null and self.tabs.active_tab_id.? == tab.id,
                 .can_bookmark = canBookmarkTab(tab),
                 .is_bookmarked = self.isBookmarked(tab.current_url),
+                .is_site_allowed = self.isSiteAllowed(tab.current_url),
             });
         }
 
@@ -777,6 +856,7 @@ pub const Browser = struct {
             if (is_active != snapshot.is_active) return false;
             if (canBookmarkTab(tab) != snapshot.can_bookmark) return false;
             if (self.isBookmarked(tab.current_url) != snapshot.is_bookmarked) return false;
+            if (self.isSiteAllowed(tab.current_url) != snapshot.is_site_allowed) return false;
         }
 
         return true;
@@ -788,6 +868,17 @@ pub const Browser = struct {
             .loading => .loading,
             .failed => .failed,
         };
+    }
+
+    fn isSiteAllowed(self: *const Browser, url: []const u8) bool {
+        const host = hostOfUrl(url) orelse return false;
+        return self.site_policies.isAllowed(host);
+    }
+
+    fn hostOfUrl(url: []const u8) ?[]const u8 {
+        const range = blocking_matcher.hostRange(url);
+        if (range.end <= range.start) return null;
+        return url[range.start..range.end];
     }
 
     fn isBookmarked(self: *const Browser, url: []const u8) bool {

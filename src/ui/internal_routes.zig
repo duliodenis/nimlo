@@ -59,11 +59,34 @@ pub fn dispatch(webview_handle: ?*anyopaque, url: []const u8) Decision {
         webview_events.emitDownloadsClearRequested(webview_handle);
         return .handled;
     }
+    if (std.mem.startsWith(u8, url, "https://nimlo.internal/blocking/site/allow?")) {
+        webview_events.emitBlockingSiteAllowRequested(webview_handle, url);
+        return .handled;
+    }
+    if (std.mem.startsWith(u8, url, "https://nimlo.internal/blocking/site/remove?")) {
+        webview_events.emitBlockingSiteRemoveRequested(webview_handle, url);
+        return .handled;
+    }
     if (web_strings.isExternalWebUrl(url)) {
         webview_events.emitUrlOpenRequested(url);
         return .handled;
     }
     return .not_internal;
+}
+
+// Decoded lowercase host from an action URL's `host` query parameter.
+// Errors when absent or empty; further validation is the policy store's.
+pub fn hostFromActionUrl(allocator: std.mem.Allocator, request_url: []const u8) ![:0]u8 {
+    const marker = "?host=";
+    const marker_index = std.mem.indexOf(u8, request_url, marker) orelse return error.MissingHostParameter;
+    const encoded = request_url[marker_index + marker.len ..];
+    if (encoded.len == 0) return error.MissingHostParameter;
+
+    const host = try web_strings.percentDecodeQueryAlloc(allocator, encoded);
+    errdefer allocator.free(host);
+    if (host.len == 0) return error.MissingHostParameter;
+    for (host) |*char| char.* = std.ascii.toLower(char.*);
+    return host;
 }
 
 // Decoded absolute file path from an action URL's `path` query parameter,
@@ -88,6 +111,8 @@ const TestCounters = struct {
     bookmark_tag_remove: usize = 0,
     downloads_remove: usize = 0,
     downloads_clear: usize = 0,
+    blocking_site_allow: usize = 0,
+    blocking_site_remove: usize = 0,
     url_open: usize = 0,
 };
 
@@ -98,7 +123,7 @@ fn testNavigationStub(_: *anyopaque, _: webview_events.NavigationEvent) void {}
 fn installTestSink() void {
     test_counters = .{};
     webview_events.setSink(.{
-        .context = @constCast(@ptrCast(&test_counters)),
+        .context = @ptrCast(@constCast(&test_counters)),
         .on_navigation = testNavigationStub,
         .on_url_open_requested = struct {
             fn f(_: *anyopaque, _: []const u8) void {
@@ -140,6 +165,16 @@ fn installTestSink() void {
                 test_counters.downloads_clear += 1;
             }
         }.f,
+        .on_blocking_site_allow_requested = struct {
+            fn f(_: *anyopaque, _: ?*anyopaque, _: []const u8) void {
+                test_counters.blocking_site_allow += 1;
+            }
+        }.f,
+        .on_blocking_site_remove_requested = struct {
+            fn f(_: *anyopaque, _: ?*anyopaque, _: []const u8) void {
+                test_counters.blocking_site_remove += 1;
+            }
+        }.f,
     });
 }
 
@@ -149,6 +184,8 @@ test "emit routes fire the matching event and report handled" {
 
     try std.testing.expectEqual(Decision.handled, dispatch(null, "https://nimlo.internal/history/delete?urls=x"));
     try std.testing.expectEqual(Decision.handled, dispatch(null, "https://nimlo.internal/history/open?urls=x"));
+    try std.testing.expectEqual(Decision.handled, dispatch(null, "https://nimlo.internal/blocking/site/allow?host=news.example"));
+    try std.testing.expectEqual(Decision.handled, dispatch(null, "https://nimlo.internal/blocking/site/remove?host=news.example"));
     try std.testing.expectEqual(Decision.handled, dispatch(null, "https://nimlo.internal/bookmarks/tag/add?url=x&tag=y"));
     try std.testing.expectEqual(Decision.handled, dispatch(null, "https://nimlo.internal/bookmarks/delete?urls=x"));
     try std.testing.expectEqual(Decision.handled, dispatch(null, "https://nimlo.internal/bookmarks/tag/remove?url=x&tag=y"));
@@ -162,6 +199,8 @@ test "emit routes fire the matching event and report handled" {
     try std.testing.expectEqual(@as(usize, 1), test_counters.bookmark_tag_remove);
     try std.testing.expectEqual(@as(usize, 1), test_counters.downloads_remove);
     try std.testing.expectEqual(@as(usize, 1), test_counters.downloads_clear);
+    try std.testing.expectEqual(@as(usize, 1), test_counters.blocking_site_allow);
+    try std.testing.expectEqual(@as(usize, 1), test_counters.blocking_site_remove);
     try std.testing.expectEqual(@as(usize, 0), test_counters.url_open);
 }
 
@@ -183,6 +222,15 @@ test "external links from internal pages open in a tab" {
     try std.testing.expectEqual(@as(usize, 1), test_counters.url_open);
     try std.testing.expectEqual(Decision.not_internal, dispatch(null, "nimlo://start"));
     try std.testing.expectEqual(Decision.not_internal, dispatch(null, "file:///tmp"));
+}
+
+test "host extraction decodes, lowercases, and validates" {
+    const host = try hostFromActionUrl(std.testing.allocator, "https://nimlo.internal/blocking/site/allow?host=News.Example");
+    defer std.testing.allocator.free(host);
+    try std.testing.expectEqualStrings("news.example", host);
+
+    try std.testing.expectError(error.MissingHostParameter, hostFromActionUrl(std.testing.allocator, "https://nimlo.internal/blocking/site/allow"));
+    try std.testing.expectError(error.MissingHostParameter, hostFromActionUrl(std.testing.allocator, "https://nimlo.internal/blocking/site/allow?host="));
 }
 
 test "path extraction decodes and validates" {

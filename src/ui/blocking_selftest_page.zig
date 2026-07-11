@@ -12,6 +12,13 @@ pub const title_pending = "PENDING";
 pub const title_blocked_ok = "BLOCKED-OK";
 pub const title_fail = "FAIL";
 
+/// The allow-variant self-test loads the page under this base URL so the
+/// document has a real host that a per-site allow policy can match.
+pub const allow_test_host = "nimlo-selftest.example";
+pub const allow_test_base_url = "https://nimlo-selftest.example/";
+pub const allow_test_action_url = "https://nimlo.internal/blocking/site/allow?host=" ++ allow_test_host;
+pub const allow_test_remove_url = "https://nimlo.internal/blocking/site/remove?host=" ++ allow_test_host;
+
 pub const html = std.fmt.comptimePrint(
     \\<!DOCTYPE html>
     \\<html><head><title>{[pending]s}</title></head><body>

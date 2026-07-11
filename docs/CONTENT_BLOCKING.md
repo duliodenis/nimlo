@@ -464,6 +464,36 @@ Most frequent options across both lists: `third-party` 5,964 · `popup` 3,044
   first toggle trigger. The enable/disable plumbing
   (`attachToController`/`forgetController` registry) is in place.
 
+### Phase G findings and results (2026-07-08)
+
+- **Cross-list experiment resolved the design**: `ignore-previous-rules` is
+  scoped **per rule list**. Control (css rule + ignore rule in one list) →
+  marker visible; treatment (ignore rule in a separate later-attached list)
+  → marker still hidden. The "separate exceptions list" design is dead;
+  per-site allow splices an `if-domain`-scoped ignore rule **into every
+  list** (including the self-test list — which is also correct product
+  behavior) via `webkit_rules.spliceSiteAllowRules`, and recompiles under
+  `<base-identifier>+allow-<hosts-hash>` identifiers (compile-cached, so a
+  toggle costs one compile ever per policy set).
+- **Architecture**: browser sessions own the `SitePolicyStore` mutations
+  (shield toggle + `blocking/site/*` routes) and persist to
+  `~/.nimlo/filters/site_policies.jsonl`; the app layer reacts to the
+  `on_blocking_site_policies_changed` AppSink event by re-reading the file,
+  splicing against the resident base JSONs, and calling
+  `content_blocking.setRuleLists`. The macOS side got generation-tracked
+  slots with full controller resync (also fixing Phase F's latent
+  nondeterministic attach order under async completions).
+- **Known 0.8 limitation**: a second window's in-memory policy store can
+  lag a toggle made in another window (its shield state, not enforcement —
+  enforcement is process-global). Phase H's page re-reads from disk.
+- **Two self-test traps found by failing runs** (both encoded as comments):
+  the allow-variant page must carry a real host for `if-domain` to match,
+  and loading it while the active tab shows an internal page routes the
+  external base URL through `internal_routes` — opening a real navigation
+  and cancelling the HTML-string load. Fixed with a
+  `blocking_allow_test_active` bypass flag, following the
+  `tear_off_self_test_active` precedent.
+
 ## Definition of done (0.8)
 
 Every README 0.8 checkbox true on macOS: research documented here (A);

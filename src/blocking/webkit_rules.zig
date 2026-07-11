@@ -290,6 +290,43 @@ fn appendDomainList(
     try out.append(allocator, ']');
 }
 
+/// Splices a per-site allow rule into an emitted rule-list JSON: an
+/// `ignore-previous-rules` action scoped by `if-domain` to the allowed
+/// hosts (with subdomains). It must live INSIDE each list because WebKit
+/// scopes ignore-previous-rules per rule list — a separate exceptions list
+/// does not reach earlier lists (verified empirically; see Appendix A,
+/// Phase G). Returns a copy of `base_json` when there is nothing to splice.
+pub fn spliceSiteAllowRules(
+    allocator: std.mem.Allocator,
+    base_json: []const u8,
+    allowed_hosts: []const []const u8,
+) ![]u8 {
+    const trimmed = std.mem.trim(u8, base_json, " \t\r\n");
+    if (allowed_hosts.len == 0 or trimmed.len < 2 or trimmed[trimmed.len - 1] != ']') {
+        return allocator.dupe(u8, base_json);
+    }
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    const body = std.mem.trim(u8, trimmed[0 .. trimmed.len - 1], " \t\r\n");
+    try out.appendSlice(allocator, body);
+    // `body` still starts with '['; only a non-empty list needs a comma.
+    if (!std.mem.eql(u8, body, "[")) try out.append(allocator, ',');
+
+    try out.appendSlice(allocator, "{\"trigger\":{\"url-filter\":\".*\",\"if-domain\":[");
+    for (allowed_hosts, 0..) |host, index| {
+        if (index > 0) try out.append(allocator, ',');
+        try out.append(allocator, '"');
+        try out.append(allocator, '*');
+        try appendJsonStringBody(allocator, &out, host);
+        try out.append(allocator, '"');
+    }
+    try out.appendSlice(allocator, "]},\"action\":{\"type\":\"ignore-previous-rules\"}}]");
+
+    return out.toOwnedSlice(allocator);
+}
+
 fn appendJsonString(allocator: std.mem.Allocator, out: *std.ArrayList(u8), text: []const u8) !void {
     try out.append(allocator, '"');
     try appendJsonStringBody(allocator, out, text);
@@ -584,4 +621,35 @@ test "cross-check: matcher and emitted url-filter agree on pattern semantics" {
         try std.testing.expectEqual(case[2], matcher_says);
         try std.testing.expectEqual(case[2], regex_says);
     }
+}
+
+test "spliceSiteAllowRules appends a scoped ignore rule inside the list" {
+    const base =
+        \\[{"trigger":{"url-filter":"ads"},"action":{"type":"block"}}]
+    ;
+    const hosts = [_][]const u8{ "news.example", "shop.example" };
+    const spliced = try spliceSiteAllowRules(std.testing.allocator, base, &hosts);
+    defer std.testing.allocator.free(spliced);
+
+    try std.testing.expectEqualStrings(
+        \\[{"trigger":{"url-filter":"ads"},"action":{"type":"block"}},{"trigger":{"url-filter":".*","if-domain":["*news.example","*shop.example"]},"action":{"type":"ignore-previous-rules"}}]
+    , spliced);
+
+    // Still valid JSON.
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, spliced, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 2), parsed.value.array.items.len);
+}
+
+test "spliceSiteAllowRules handles empty inputs" {
+    const no_hosts = try spliceSiteAllowRules(std.testing.allocator, "[{\"x\":1}]", &.{});
+    defer std.testing.allocator.free(no_hosts);
+    try std.testing.expectEqualStrings("[{\"x\":1}]", no_hosts);
+
+    const hosts = [_][]const u8{"news.example"};
+    const empty_base = try spliceSiteAllowRules(std.testing.allocator, "[]", &hosts);
+    defer std.testing.allocator.free(empty_base);
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, empty_base, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.array.items.len);
 }

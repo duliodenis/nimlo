@@ -1,6 +1,13 @@
 //! macOS content-blocking enforcement: compiles WebKit content-blocker JSON
 //! through WKContentRuleListStore and attaches the compiled lists to every
-//! registered WKUserContentController (docs/CONTENT_BLOCKING.md, Phase F).
+//! registered WKUserContentController (docs/CONTENT_BLOCKING.md, Phases F/G).
+//!
+//! Rule lists are replaceable at runtime (per-site allow policies rebuild
+//! them): each setRuleLists call starts a new generation, and completions
+//! from stale generations are discarded. Controllers are always resynced to
+//! the full slot order — WebKit evaluates lists in attach order and
+//! completions arrive in any order, so incremental adds would make
+//! evaluation order nondeterministic.
 //!
 //! WKContentRuleListStore's API is async with ObjC completion blocks. The
 //! blocks are built here in raw C ABI, marked BLOCK_IS_GLOBAL so the ObjC
@@ -9,7 +16,7 @@
 //! deliberately never freed: the runtime still reads the block's flags in
 //! _Block_release *after* invoke returns, so freeing inside invoke is a
 //! use-after-free (page_allocator unmaps the page → segfault). A few dozen
-//! leaked bytes per rule list per launch is the price of not owning the
+//! leaked bytes per rule list per rebuild is the price of not owning the
 //! release point.
 
 const std = @import("std");
@@ -53,44 +60,21 @@ var rule_list_block_descriptor = BlockDescriptor{
 const PendingList = struct {
     identifier: [:0]u8,
     json: ?[:0]u8,
+    generation: usize,
+    slot_index: usize,
 };
 
-var install_started = false;
+// One entry per rule list, in evaluation order.
+const Slot = struct {
+    identifier: [:0]u8,
+    rule_list: Id = null,
+};
+
 var store: Id = null;
-var compiled_lists: std.ArrayList(Id) = .empty;
+var slots: std.ArrayList(Slot) = .empty;
 var registered_controllers: std.ArrayList(Id) = .empty;
 var pending_count: usize = 0;
-
-pub fn installRuleLists(compiled_store_path: []const u8, sources: []const content_blocking.RuleListSource) void {
-    if (install_started) return;
-    install_started = true;
-
-    const allocator = std.heap.page_allocator;
-    const path_z = allocator.dupeZ(u8, compiled_store_path) catch return;
-    defer allocator.free(path_z);
-
-    const store_url = msg2(
-        Id,
-        cls("NSURL"),
-        sel("fileURLWithPath:isDirectory:"),
-        nsString(path_z),
-        true,
-    );
-    // Compiled artifacts cache separately from browsing data on purpose:
-    // the browsing store is non-persistent, the compile cache must persist.
-    store = msg1(Id, cls("WKContentRuleListStore"), sel("storeWithURL:"), store_url);
-    if (store == null) {
-        std.debug.print("content blocking: WKContentRuleListStore unavailable.\n", .{});
-        return;
-    }
-    _ = msg0(Id, store, sel("retain"));
-
-    for (sources) |source| {
-        lookUpOrCompile(source) catch |err| {
-            std.debug.print("content blocking: install failed for {s}: {s}\n", .{ source.identifier, @errorName(err) });
-        };
-    }
-}
+var generation: usize = 0;
 
 pub fn wantsRuleListPayloads() bool {
     return true;
@@ -101,7 +85,63 @@ pub fn pendingListCount() usize {
 }
 
 pub fn activeListCount() usize {
-    return compiled_lists.items.len;
+    var count: usize = 0;
+    for (slots.items) |slot| {
+        if (slot.rule_list != null) count += 1;
+    }
+    return count;
+}
+
+/// Replaces the full rule-list set. Compilation is async; controllers are
+/// resynced as lists resolve, and webviews pick the change up on their next
+/// navigation.
+pub fn setRuleLists(compiled_store_path: []const u8, sources: []const content_blocking.RuleListSource) void {
+    const allocator = std.heap.page_allocator;
+
+    if (store == null) {
+        const path_z = allocator.dupeZ(u8, compiled_store_path) catch return;
+        defer allocator.free(path_z);
+
+        const store_url = msg2(
+            Id,
+            cls("NSURL"),
+            sel("fileURLWithPath:isDirectory:"),
+            nsString(path_z),
+            true,
+        );
+        // Compiled artifacts cache separately from browsing data on purpose:
+        // the browsing store is non-persistent, the compile cache must persist.
+        store = msg1(Id, cls("WKContentRuleListStore"), sel("storeWithURL:"), store_url);
+        if (store == null) {
+            std.debug.print("content blocking: WKContentRuleListStore unavailable.\n", .{});
+            return;
+        }
+        _ = msg0(Id, store, sel("retain"));
+    }
+
+    generation += 1;
+    for (slots.items) |slot| {
+        if (slot.rule_list) |rule_list| _ = msg0(Id, rule_list, sel("release"));
+        allocator.free(slot.identifier);
+    }
+    slots.clearRetainingCapacity();
+    pending_count = 0;
+
+    for (sources) |source| {
+        const identifier = allocator.dupeZ(u8, source.identifier) catch continue;
+        slots.append(allocator, .{ .identifier = identifier }) catch {
+            allocator.free(identifier);
+            continue;
+        };
+    }
+    resyncControllers();
+
+    for (sources, 0..) |source, slot_index| {
+        if (slot_index >= slots.items.len) break;
+        lookUpOrCompile(source, slot_index) catch |err| {
+            std.debug.print("content blocking: install failed for {s}: {s}\n", .{ source.identifier, @errorName(err) });
+        };
+    }
 }
 
 /// Registers a webview's user content controller so it receives every
@@ -119,9 +159,7 @@ pub fn attachToController(controller: Id) void {
         return;
     };
 
-    for (compiled_lists.items) |rule_list| {
-        msg1(void, controller, sel("addContentRuleList:"), rule_list);
-    }
+    syncController(controller);
 }
 
 /// Forgets a controller when its webview is destroyed.
@@ -135,7 +173,7 @@ pub fn forgetController(controller: Id) void {
     }
 }
 
-fn lookUpOrCompile(source: content_blocking.RuleListSource) !void {
+fn lookUpOrCompile(source: content_blocking.RuleListSource, slot_index: usize) !void {
     const allocator = std.heap.page_allocator;
 
     const pending = try allocator.create(PendingList);
@@ -143,6 +181,8 @@ fn lookUpOrCompile(source: content_blocking.RuleListSource) !void {
     pending.* = .{
         .identifier = try allocator.dupeZ(u8, source.identifier),
         .json = try allocator.dupeZ(u8, source.json),
+        .generation = generation,
+        .slot_index = slot_index,
     };
 
     pending_count += 1;
@@ -164,8 +204,13 @@ fn onLookUpCompleted(block: *RuleListCompletionBlock, rule_list: Id, lookup_erro
     const pending = block.pending;
     _ = lookup_error;
 
+    if (pending.generation != generation) {
+        finishPending(pending);
+        return;
+    }
+
     if (rule_list != null) {
-        adoptCompiledList(rule_list);
+        adoptCompiledList(pending.slot_index, rule_list);
         std.debug.print("content blocking: {s} loaded from compile cache.\n", .{pending.identifier});
         completePending(pending);
         return;
@@ -193,8 +238,13 @@ fn onLookUpCompleted(block: *RuleListCompletionBlock, rule_list: Id, lookup_erro
 fn onCompileCompleted(block: *RuleListCompletionBlock, rule_list: Id, compile_error: Id) callconv(.c) void {
     const pending = block.pending;
 
+    if (pending.generation != generation) {
+        finishPending(pending);
+        return;
+    }
+
     if (rule_list != null) {
-        adoptCompiledList(rule_list);
+        adoptCompiledList(pending.slot_index, rule_list);
         std.debug.print("content blocking: {s} compiled.\n", .{pending.identifier});
     } else {
         // WebKit's compiler is the ground truth for the Phase D emitter;
@@ -207,15 +257,25 @@ fn onCompileCompleted(block: *RuleListCompletionBlock, rule_list: Id, compile_er
     completePending(pending);
 }
 
-fn adoptCompiledList(rule_list: Id) void {
+fn adoptCompiledList(slot_index: usize, rule_list: Id) void {
+    if (slot_index >= slots.items.len) return;
     _ = msg0(Id, rule_list, sel("retain"));
-    compiled_lists.append(std.heap.page_allocator, rule_list) catch {
-        _ = msg0(Id, rule_list, sel("release"));
-        return;
-    };
+    slots.items[slot_index].rule_list = rule_list;
+    resyncControllers();
+}
 
+fn resyncControllers() void {
     for (registered_controllers.items) |controller| {
-        msg1(void, controller, sel("addContentRuleList:"), rule_list);
+        syncController(controller);
+    }
+}
+
+fn syncController(controller: Id) void {
+    msg0(void, controller, sel("removeAllContentRuleLists"));
+    for (slots.items) |slot| {
+        if (slot.rule_list) |rule_list| {
+            msg1(void, controller, sel("addContentRuleList:"), rule_list);
+        }
     }
 }
 
@@ -223,7 +283,7 @@ fn completePending(pending: *PendingList) void {
     pending_count -= 1;
     finishPending(pending);
     if (pending_count == 0) {
-        std.debug.print("content blocking: {d} rule lists active.\n", .{compiled_lists.items.len});
+        std.debug.print("content blocking: {d} rule lists active.\n", .{activeListCount()});
     }
 }
 

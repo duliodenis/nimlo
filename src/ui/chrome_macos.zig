@@ -122,6 +122,7 @@ const ChromeWindowState = struct {
     window: Id,
     address_field: Id = null,
     bookmark_button: Id = null,
+    shield_button: Id = null,
     bookmark_menu_item: Id = null,
     reload_button: Id = null,
     tab_icon: Id = null,
@@ -164,6 +165,7 @@ const PendingDownload = struct {
 
 var current_address_field: Id = null;
 var current_bookmark_button: Id = null;
+var current_shield_button: Id = null;
 var current_bookmark_menu_item: Id = null;
 var current_reload_button: Id = null;
 var current_tab_icon: Id = null;
@@ -210,6 +212,7 @@ fn beginChromeWindowInstall(window_handle: Id) !void {
 
     current_address_field = null;
     current_bookmark_button = null;
+    current_shield_button = null;
     current_reload_button = null;
     current_tab_icon = null;
     current_tab_label = null;
@@ -233,6 +236,7 @@ fn saveActiveChromeWindowState() void {
         .window = current_window,
         .address_field = current_address_field,
         .bookmark_button = current_bookmark_button,
+        .shield_button = current_shield_button,
         .bookmark_menu_item = current_bookmark_menu_item,
         .reload_button = current_reload_button,
         .tab_icon = current_tab_icon,
@@ -259,6 +263,7 @@ fn activateChromeWindowState(window_handle: Id) void {
         current_window = state.window;
         current_address_field = state.address_field;
         current_bookmark_button = state.bookmark_button;
+        current_shield_button = state.shield_button;
         current_bookmark_menu_item = state.bookmark_menu_item;
         current_reload_button = state.reload_button;
         current_tab_icon = state.tab_icon;
@@ -302,6 +307,7 @@ fn removeChromeWindowState(window_handle: Id) void {
         current_window = null;
         current_address_field = null;
         current_bookmark_button = null;
+        current_shield_button = null;
         current_reload_button = null;
         current_tab_icon = null;
         current_tab_label = null;
@@ -405,6 +411,8 @@ fn addToolbar(content_view: Id, bounds: CGRect, webview: Id) !Id {
     current_reload_button = try addToolbarButton(content_view, target, "arrow.clockwise", "Reload", "reload:", button_x, button_y);
     button_x += nav_button_size + nav_button_gap;
     current_bookmark_button = try addToolbarButton(content_view, target, "star", "Bookmark Current Page", "toggleBookmarkCurrentPage:", button_x, button_y);
+    button_x += nav_button_size + nav_button_gap;
+    current_shield_button = try addToolbarButton(content_view, target, "shield", "Disable Content Blocking on This Site", "toggleSiteBlocking:", button_x, button_y);
 
     const address_x = button_x + nav_button_size + nav_button_gap;
     const address_frame = CGRect{
@@ -985,6 +993,7 @@ fn handleTabsChanged(context: *anyopaque, tabs: []const webview_events.TabSnapsh
     current_tab_snapshots.clearRetainingCapacity();
     current_tab_snapshots.appendSlice(std.heap.page_allocator, tabs) catch return;
     updateBookmarkControlForActiveTab();
+    updateShieldControlForActiveTab();
     renderTitlebarTabs(tabs) catch return;
 }
 
@@ -1212,6 +1221,26 @@ fn addMenuItemWithResult(menu: Id, title: [:0]const u8, action: Sel, key: [:0]co
     return item;
 }
 
+fn toggleSiteBlocking(_: Id, _: Sel, _: Id) callconv(.c) void {
+    webview_events.emitBlockingSiteToggleRequested();
+}
+
+fn updateShieldControlForActiveTab() void {
+    const active_tab = activeTabSnapshot();
+    // Per-site policies only make sense for external pages; reuse the
+    // bookmarkability signal for "this is a real site".
+    const has_site = if (active_tab) |tab| tab.can_bookmark else false;
+    const is_allowed = if (active_tab) |tab| tab.is_site_allowed else false;
+
+    const title: [:0]const u8 = if (is_allowed) "Enable Content Blocking on This Site" else "Disable Content Blocking on This Site";
+    const symbol: [:0]const u8 = if (is_allowed) "shield.slash" else "shield";
+
+    if (current_shield_button) |button| {
+        setToolbarButtonSymbol(button, symbol, title);
+        msg1(void, button, sel("setEnabled:"), has_site);
+    }
+}
+
 fn updateBookmarkControlForActiveTab() void {
     const active_tab = activeTabSnapshot();
     const can_bookmark = if (active_tab) |tab| tab.can_bookmark else false;
@@ -1350,6 +1379,18 @@ fn installAddressBarTargetClass() void {
         target_class,
         c.sel_registerName("runScheduledBlockingSelfTest:"),
         @ptrCast(&runScheduledBlockingSelfTest),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("runScheduledBlockingAllowTest:"),
+        @ptrCast(&runScheduledBlockingAllowTest),
+        "v@:@",
+    );
+    _ = c.class_addMethod(
+        target_class,
+        c.sel_registerName("toggleSiteBlocking:"),
+        @ptrCast(&toggleSiteBlocking),
         "v@:@",
     );
     _ = c.class_addMethod(
@@ -1923,7 +1964,6 @@ fn detachedWindowPlacement(event: Id) ?webview_events.DetachedWindowPlacement {
     });
 }
 
-
 // Diagnostic driven by NIMLO_CLOSE_SOURCE_TEST=1: tears a tab off a
 // three-tab window, then closes the source window through the user-facing
 // performClose: path and reports what windows/modal sessions remain.
@@ -2005,6 +2045,133 @@ fn runScheduledBlockingSelfTest(_: Id, _: Sel, _: Id) callconv(.c) void {
         return;
     }
     scheduleBlockingSelfTestTick();
+}
+
+// NIMLO_BLOCKING_TEST=allow: proves the per-site allow round trip. Loads
+// the self-test page under a real host (blocked state), allows that host
+// through the same event path the shield uses (which recompiles the rule
+// lists with the spliced allow rule), reloads, and expects the marker to
+// be visible; finally removes the policy to leave state clean.
+const AllowTestPhase = enum { wait_ready, expect_blocked, wait_rebuild, expect_allowed };
+var allow_test_phase: AllowTestPhase = .wait_ready;
+var allow_test_ticks: usize = 0;
+// While set, decideNavigationPolicy skips the internal-page route dispatch:
+// the test page's external base URL would otherwise be opened as a real
+// navigation (and the HTML-string load cancelled).
+var blocking_allow_test_active = false;
+
+pub fn scheduleBlockingAllowSelfTest() void {
+    allow_test_phase = .wait_ready;
+    allow_test_ticks = 0;
+    blocking_allow_test_active = true;
+    scheduleAllowTestTick();
+}
+
+fn scheduleAllowTestTick() void {
+    const target = current_webview_target orelse {
+        std.debug.print("blocking allow self test: ALLOW-FAIL (no webview target)\n", .{});
+        blocking_allow_test_active = false;
+        return;
+    };
+    _ = msg5(
+        Id,
+        cls("NSTimer"),
+        sel("scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:"),
+        @as(f64, 0.5),
+        target,
+        sel("runScheduledBlockingAllowTest:"),
+        @as(Id, null),
+        false,
+    );
+}
+
+fn loadAllowTestPage(webview: Id) void {
+    const base_url = msg1(
+        Id,
+        cls("NSURL"),
+        sel("URLWithString:"),
+        nsString(blocking_selftest_page.allow_test_base_url),
+    );
+    // Deliberately NOT marked as an internal page: the internal-page policy
+    // chain would route the external base URL through internal_routes and
+    // open it as a real navigation, stomping the test page.
+    _ = msg2(Id, webview, sel("loadHTMLString:baseURL:"), nsString(blocking_selftest_page.html), base_url);
+}
+
+fn runScheduledBlockingAllowTest(_: Id, _: Sel, _: Id) callconv(.c) void {
+    allow_test_ticks += 1;
+    // The rebuild recompiles both big lists with new identifiers; allow
+    // minutes on a first (uncached) debug-build run.
+    if (allow_test_ticks > 300) {
+        std.debug.print("blocking allow self test: ALLOW-FAIL (timed out in {s})\n", .{@tagName(allow_test_phase)});
+        blocking_allow_test_active = false;
+        return;
+    }
+
+    const webview = getIvar(current_webview_target, "webView") orelse {
+        std.debug.print("blocking allow self test: ALLOW-FAIL (no active webview)\n", .{});
+        blocking_allow_test_active = false;
+        return;
+    };
+
+    switch (allow_test_phase) {
+        .wait_ready => {
+            if (content_blocking.pendingListCount() > 0) {
+                scheduleAllowTestTick();
+                return;
+            }
+            loadAllowTestPage(webview);
+            allow_test_phase = .expect_blocked;
+            scheduleAllowTestTick();
+        },
+        .expect_blocked => {
+            const title = webviewTitle(webview);
+            if (std.mem.eql(u8, title, blocking_selftest_page.title_blocked_ok)) {
+                std.debug.print("blocking allow self test: blocked baseline confirmed, allowing {s}\n", .{blocking_selftest_page.allow_test_host});
+                webview_events.emitBlockingSiteAllowRequested(null, blocking_selftest_page.allow_test_action_url);
+                allow_test_phase = .wait_rebuild;
+            } else if (std.mem.eql(u8, title, blocking_selftest_page.title_fail)) {
+                std.debug.print("blocking allow self test: ALLOW-FAIL (baseline not blocked)\n", .{});
+                blocking_allow_test_active = false;
+                return;
+            }
+            scheduleAllowTestTick();
+        },
+        .wait_rebuild => {
+            if (content_blocking.pendingListCount() > 0) {
+                scheduleAllowTestTick();
+                return;
+            }
+            loadAllowTestPage(webview);
+            allow_test_phase = .expect_allowed;
+            scheduleAllowTestTick();
+        },
+        .expect_allowed => {
+            const title = webviewTitle(webview);
+            if (std.mem.eql(u8, title, blocking_selftest_page.title_fail)) {
+                // FAIL from the page means the marker is visible — exactly
+                // what a working per-site allow produces.
+                std.debug.print("blocking allow self test: ALLOW-OK ({d} rule lists active)\n", .{content_blocking.activeListCount()});
+                webview_events.emitBlockingSiteRemoveRequested(null, blocking_selftest_page.allow_test_remove_url);
+                blocking_allow_test_active = false;
+                return;
+            }
+            if (std.mem.eql(u8, title, blocking_selftest_page.title_blocked_ok)) {
+                std.debug.print("blocking allow self test: ALLOW-FAIL (still blocked after allow)\n", .{});
+                webview_events.emitBlockingSiteRemoveRequested(null, blocking_selftest_page.allow_test_remove_url);
+                blocking_allow_test_active = false;
+                return;
+            }
+            scheduleAllowTestTick();
+        },
+    }
+}
+
+fn webviewTitle(webview: Id) []const u8 {
+    const title_id = msg0(Id, webview, sel("title"));
+    if (title_id == null) return "";
+    const title_utf8 = msg0(?[*:0]const u8, title_id, sel("UTF8String")) orelse return "";
+    return std.mem.span(title_utf8);
 }
 
 pub fn scheduleCloseSourceSelfTest(variant: []const u8) void {
@@ -2827,7 +2994,7 @@ fn decideNavigationPolicy(_: Id, _: Sel, webview: Id, navigation_action: Id, dec
     const raw = if (absolute != null) msg0(?[*:0]const u8, absolute, sel("UTF8String")) else null;
     const target_url = if (raw) |value| std.mem.span(value) else "";
 
-    if (webViewIsInternal(webview)) {
+    if (webViewIsInternal(webview) and !blocking_allow_test_active) {
         switch (internal_routes.dispatch(webview, target_url)) {
             .not_internal => {},
             .handled => {
@@ -3009,7 +3176,6 @@ fn openDownloadPathFromRequest(request_url: []const u8, reveal: bool) void {
         _ = msg1(u8, workspace, sel("openURL:"), file_url);
     }
 }
-
 
 fn navigationStarted(target: Id, _: Sel, webview: Id, _: Id) callconv(.c) void {
     _ = target;

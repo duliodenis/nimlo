@@ -5,6 +5,7 @@ const tab_model = @import("../browser/tab.zig");
 const preferences = @import("../storage/preferences.zig");
 const filter_lists = @import("../storage/filter_lists.zig");
 const filter_assets = @import("filter_lists_asset");
+const site_policies = @import("../storage/site_policies.zig");
 const abp_parser = @import("../blocking/abp_parser.zig");
 const webkit_rules = @import("../blocking/webkit_rules.zig");
 const content_blocking = @import("../webview/content_blocking.zig");
@@ -23,6 +24,7 @@ pub fn run() !void {
     webview_events.setAppSink(.{
         .context = &controller,
         .on_new_window_requested = handleNewWindowRequested,
+        .on_blocking_site_policies_changed = handleBlockingSitePoliciesChanged,
         .on_window_closed = handleWindowClosed,
         .on_tab_detached = handleTabDetached,
         .on_tab_detached_from_source = handleTabDetachedFromSource,
@@ -31,6 +33,7 @@ pub fn run() !void {
     });
     defer webview_events.clearAppSink();
 
+    controller.rebuildContentBlocking();
     try controller.createWindow();
     std.debug.print("Nimlo app shell placeholder ready.\n", .{});
     try controller.run();
@@ -46,6 +49,11 @@ const AppController = struct {
     downloads_path: []const u8,
     filters_dir_path: []const u8,
     filter_store: filter_lists.FilterListStore,
+    site_policies_path: []const u8,
+    // Emitted WebKit JSON per enabled list, kept resident so per-site
+    // policy toggles splice + recompile without re-running the parse/emit
+    // pipeline (docs/CONTENT_BLOCKING.md, Phase G).
+    blocking_base_sources: std.ArrayList(BlockingBaseSource),
     sessions: std.ArrayList(*BrowserWindowSession),
 
     fn init(allocator: std.mem.Allocator) !AppController {
@@ -71,8 +79,13 @@ const AppController = struct {
         initFilterLists(&filter_store, filters_dir_path) catch |err| {
             std.debug.print("filter list setup failed: {s}\n", .{@errorName(err)});
         };
-        installContentBlocking(allocator, &filter_store, filters_dir_path) catch |err| {
+
+        const site_policies_path = try std.fmt.allocPrint(allocator, "{s}/site_policies.jsonl", .{filters_dir_path});
+        errdefer allocator.free(site_policies_path);
+
+        const blocking_base_sources = buildBlockingBaseSources(allocator, &filter_store, filters_dir_path) catch |err| blk: {
             std.debug.print("content blocking setup failed: {s}\n", .{@errorName(err)});
+            break :blk std.ArrayList(BlockingBaseSource).empty;
         };
 
         return .{
@@ -85,6 +98,8 @@ const AppController = struct {
             .downloads_path = downloads_path,
             .filters_dir_path = filters_dir_path,
             .filter_store = filter_store,
+            .site_policies_path = site_policies_path,
+            .blocking_base_sources = blocking_base_sources,
             .sessions = .empty,
         };
     }
@@ -95,6 +110,12 @@ const AppController = struct {
             self.allocator.destroy(session);
         }
         self.sessions.deinit(self.allocator);
+        for (self.blocking_base_sources.items) |source| {
+            self.allocator.free(source.identifier);
+            self.allocator.free(source.json);
+        }
+        self.blocking_base_sources.deinit(self.allocator);
+        self.allocator.free(self.site_policies_path);
         self.filter_store.deinit();
         self.allocator.free(self.filters_dir_path);
         self.allocator.free(self.downloads_path);
@@ -125,6 +146,7 @@ const AppController = struct {
         try session.core.enableHistoryPersistence(self.history_path);
         try session.core.enableBookmarkPersistence(self.bookmarks_path);
         try session.core.enableDownloadPersistence(self.downloads_path);
+        try session.core.enableSitePolicyPersistence(self.site_policies_path);
         if (initial_tab) |tab| {
             try seedInitialTab(&session.core, tab);
         }
@@ -188,6 +210,78 @@ const AppController = struct {
         }
         return null;
     }
+
+    // Installs (or reinstalls) the platform rule lists: cached base JSON per
+    // list, with the current per-site allow policy spliced in. Policies are
+    // re-read from disk — browser sessions own the mutations.
+    fn rebuildContentBlocking(self: *AppController) void {
+        if (self.blocking_base_sources.items.len == 0) return;
+        const allocator = self.allocator;
+
+        var policies = site_policies.SitePolicyStore.init(allocator);
+        defer policies.deinit();
+        policies.loadFromFile(std.Io.Dir.cwd(), std.Options.debug_io, self.site_policies_path) catch |err| {
+            std.debug.print("site policy load failed: {s}\n", .{@errorName(err)});
+        };
+        const hosts = policies.allowedHosts(allocator) catch return;
+        defer allocator.free(hosts);
+
+        var sources: std.ArrayList(content_blocking.RuleListSource) = .empty;
+        var scratch: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (scratch.items) |text| allocator.free(text);
+            scratch.deinit(allocator);
+            sources.deinit(allocator);
+        }
+
+        var hosts_hasher = std.hash.Wyhash.init(0);
+        for (hosts) |host| {
+            hosts_hasher.update(host);
+            hosts_hasher.update("|");
+        }
+        const hosts_hash = hosts_hasher.final();
+
+        // The self-test rules are always installed; they are inert outside
+        // NIMLO_BLOCKING_TEST (a reserved element id and a reserved host).
+        // They take the same splice path as every list: ignore-previous-rules
+        // is scoped per list, so the allow rule must live in each one.
+        const selftest_base = [_]BlockingBaseSource{.{
+            .identifier = content_blocking.selftest_identifier,
+            .json = content_blocking.selftest_rules_json,
+        }};
+
+        var all_bases: std.ArrayList(BlockingBaseSource) = .empty;
+        defer all_bases.deinit(allocator);
+        all_bases.append(allocator, selftest_base[0]) catch return;
+        all_bases.appendSlice(allocator, self.blocking_base_sources.items) catch return;
+
+        for (all_bases.items) |base| {
+            if (hosts.len == 0) {
+                sources.append(allocator, .{ .identifier = base.identifier, .json = base.json }) catch return;
+                continue;
+            }
+            const spliced = webkit_rules.spliceSiteAllowRules(allocator, base.json, hosts) catch continue;
+            scratch.append(allocator, spliced) catch {
+                allocator.free(spliced);
+                continue;
+            };
+            const identifier = std.fmt.allocPrint(allocator, "{s}+allow-{x}", .{ base.identifier, hosts_hash }) catch continue;
+            scratch.append(allocator, identifier) catch {
+                allocator.free(identifier);
+                continue;
+            };
+            sources.append(allocator, .{ .identifier = identifier, .json = spliced }) catch return;
+        }
+
+        const compiled_dir_path = std.fmt.allocPrint(allocator, "{s}/compiled", .{self.filters_dir_path}) catch return;
+        defer allocator.free(compiled_dir_path);
+        ensurePersistenceDirectory(compiled_dir_path) catch return;
+
+        content_blocking.setRuleLists(compiled_dir_path, sources.items);
+        if (hosts.len > 0) {
+            std.debug.print("content blocking: rebuilt with {d} site allow entries.\n", .{hosts.len});
+        }
+    }
 };
 
 const BrowserWindowSession = struct {
@@ -205,6 +299,11 @@ fn handleNewWindowRequested(context: *anyopaque) void {
     controller.createWindow() catch |err| {
         std.debug.print("new window failed: {s}\n", .{@errorName(err)});
     };
+}
+
+fn handleBlockingSitePoliciesChanged(context: *anyopaque) void {
+    const controller: *AppController = @ptrCast(@alignCast(context));
+    controller.rebuildContentBlocking();
 }
 
 fn handleTabDetached(context: *anyopaque, tab: webview_events.DetachedTab) void {
@@ -366,38 +465,26 @@ fn initFilterLists(store: *filter_lists.FilterListStore, filters_dir_path: []con
     std.debug.print("content blocking: {d} filter lists in catalog.\n", .{store.records().len});
 }
 
-// Converts every enabled filter list to the platform's rule payload and
-// hands the batch over for compilation (docs/CONTENT_BLOCKING.md, Phase F).
-// Identifiers carry a content hash so unchanged lists hit the platform's
-// compile cache and steady-state startups compile nothing.
-fn installContentBlocking(
+const BlockingBaseSource = struct {
+    identifier: []const u8,
+    json: []const u8,
+};
+
+// Converts every enabled filter list to the platform's rule payload
+// (docs/CONTENT_BLOCKING.md, Phases F/G). Identifiers carry a content hash
+// so unchanged lists hit the platform's compile cache and steady-state
+// startups compile nothing.
+fn buildBlockingBaseSources(
     allocator: std.mem.Allocator,
     store: *filter_lists.FilterListStore,
     filters_dir_path: []const u8,
-) !void {
-    if (!content_blocking.wantsRuleListPayloads()) return;
+) !std.ArrayList(BlockingBaseSource) {
+    var bases: std.ArrayList(BlockingBaseSource) = .empty;
+    if (!content_blocking.wantsRuleListPayloads()) return bases;
 
     const io = std.Options.debug_io;
     var dir = try std.Io.Dir.cwd().openDir(io, filters_dir_path, .{});
     defer dir.close(io);
-
-    var sources: std.ArrayList(content_blocking.RuleListSource) = .empty;
-    defer {
-        for (sources.items) |source| {
-            if (!std.mem.eql(u8, source.identifier, content_blocking.selftest_identifier)) {
-                allocator.free(source.identifier);
-                allocator.free(source.json);
-            }
-        }
-        sources.deinit(allocator);
-    }
-
-    // The self-test rules are always installed; they are inert outside
-    // NIMLO_BLOCKING_TEST (a reserved element id and a reserved host).
-    try sources.append(allocator, .{
-        .identifier = content_blocking.selftest_identifier,
-        .json = content_blocking.selftest_rules_json,
-    });
 
     for (store.records()) |record| {
         if (!record.enabled) continue;
@@ -422,7 +509,7 @@ fn installContentBlocking(
         });
         errdefer allocator.free(identifier);
 
-        try sources.append(allocator, .{ .identifier = identifier, .json = emitted.json });
+        try bases.append(allocator, .{ .identifier = identifier, .json = emitted.json });
         std.debug.print("content blocking: {s} → {d} WebKit rules ({d} capped, {d} unexpressible).\n", .{
             record.id,
             emitted.stats.emitted_total,
@@ -431,9 +518,5 @@ fn installContentBlocking(
         });
     }
 
-    const compiled_dir_path = try std.fmt.allocPrint(allocator, "{s}/compiled", .{filters_dir_path});
-    defer allocator.free(compiled_dir_path);
-    try ensurePersistenceDirectory(compiled_dir_path);
-
-    content_blocking.installRuleLists(compiled_dir_path, sources.items);
+    return bases;
 }
